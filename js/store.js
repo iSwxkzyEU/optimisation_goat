@@ -1,147 +1,180 @@
 /* ============================================================
-   STORE — couche de stockage.
-   VERSION LOCALE : tout est gardé dans le navigateur (localStorage).
-   ⚠️ C'est volontaire : ça permet de voir le site fonctionner SANS
-   aucun compte ni serveur. Les données ne sont visibles que sur CE
-   PC / CE navigateur.
-   Quand on passera en ligne, on remplacera SEULEMENT le contenu de
-   ce fichier par des appels Supabase — le reste de l'app n'y verra
-   que du feu (même API : getNukes, saveNuke, deleteNuke, etc.).
+   STORE — couche de stockage PARTAGÉE via Supabase.
+   Les données (nukes + formations) et les fichiers (screens, .cas)
+   sont stockés sur Supabase → visibles par TOUTE la guilde.
+
+   Astuce d'architecture : on charge tout en mémoire au démarrage
+   (Store.init), puis les "getters" lisent ce cache de façon
+   synchrone (l'interface n'a presque pas changé). Les écritures,
+   elles, partent vers Supabase puis mettent le cache à jour.
    ============================================================ */
 
 (function () {
   "use strict";
 
-  var KEY = "gwp_data_v1";
+  /* --- Configuration Supabase (clé anon = publique, normal) --------- */
+  var SUPABASE_URL = "https://hmhpsojjzpncibydbgqi.supabase.co";
+  var SUPABASE_ANON_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhtaHBzb2pqenBuY2lieWRiZ3FpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4Mzk1MzgsImV4cCI6MjA5NjQxNTUzOH0.gesERetirlCoL_O3MTerFFLVq3sDslqsmqnd-NGNgN0";
 
-  // Côtés d'attaque et types de formation (2 niveaux : côté × type)
   var SIDES = ["RIGHT", "LEFT", "FRONT", "BACK"];
   var FORM_TYPES = ["50", "90", "110", "Barrack"];
 
-  function load() {
-    var data;
-    try {
-      data = JSON.parse(localStorage.getItem(KEY)) || empty();
-    } catch (e) {
-      data = empty();
-    }
-    return normalize(data);
-  }
+  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  function emptySide() {
-    var s = {};
-    FORM_TYPES.forEach(function (t) { s[t] = []; });
-    return s;
-  }
+  // Cache mémoire (rempli par init, relu par les getters synchrones)
+  var cache = { nukes: [], formations: emptyFormations() };
 
-  function empty() {
+  function emptyFormations() {
     var f = {};
-    SIDES.forEach(function (side) { f[side] = emptySide(); });
-    return { nukes: [], formations: f };
-  }
-
-  // Garantit la structure côté × type (et migre l'ancien format à plat)
-  function normalize(data) {
-    if (!data.nukes) data.nukes = [];
-    if (!data.formations) data.formations = {};
-    SIDES.forEach(function (side) {
-      var cur = data.formations[side];
-      if (!cur || Array.isArray(cur)) {
-        // ancien format (tableau à plat) ou absent -> on (re)crée la structure
-        data.formations[side] = emptySide();
-      } else {
-        FORM_TYPES.forEach(function (t) {
-          if (!Array.isArray(cur[t])) cur[t] = [];
-        });
-      }
+    SIDES.forEach(function (s) {
+      f[s] = {};
+      FORM_TYPES.forEach(function (t) { f[s][t] = []; });
     });
-    return data;
+    return f;
   }
 
-  function persist(data) {
-    localStorage.setItem(KEY, JSON.stringify(data));
+  /* --- Chargement initial ------------------------------------------- */
+  function init() {
+    return Promise.all([loadNukes(), loadFormations()]);
   }
 
-  function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  function loadNukes() {
+    return sb.from("nukes").select("*").then(function (res) {
+      if (res.error) throw res.error;
+      cache.nukes = (res.data || []).map(fromRow);
+    });
   }
 
-  // --- Nukes ------------------------------------------------------------
+  function loadFormations() {
+    return sb.from("formations").select("*").then(function (res) {
+      if (res.error) throw res.error;
+      var f = emptyFormations();
+      (res.data || []).forEach(function (row) {
+        if (!f[row.side]) f[row.side] = {};
+        if (!f[row.side][row.type]) f[row.side][row.type] = [];
+        f[row.side][row.type].push({ id: row.id, name: row.name, url: row.url, dataUrl: row.url });
+      });
+      cache.formations = f;
+    });
+  }
 
+  /* --- Conversions ligne <-> objet ---------------------------------- */
+  function fromRow(r) {
+    return {
+      id: r.id,
+      target: r.target,
+      side: r.side,
+      spread: r.spread,
+      participants: r.participants || [],
+      firstLaunch: r.first_launch || "",
+      raw: r.raw || "",
+      targetImage: r.target_image || null,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : 0,
+    };
+  }
+
+  function toRow(nuke) {
+    return {
+      target: nuke.target || null,
+      side: nuke.side || null,
+      spread: nuke.spread || null,
+      participants: nuke.participants || [],
+      first_launch: nuke.firstLaunch || null,
+      raw: nuke.raw || null,
+      target_image: nuke.targetImage || null,
+    };
+  }
+
+  /* --- Nukes (lecture synchrone depuis le cache) -------------------- */
   function getNukes() {
-    return load().nukes.sort(function (a, b) {
+    return cache.nukes.slice().sort(function (a, b) {
       return (b.createdAt || 0) - (a.createdAt || 0);
     });
   }
 
   function getNuke(id) {
-    return load().nukes.find(function (n) { return n.id === id; }) || null;
+    return cache.nukes.find(function (n) { return n.id === id; }) || null;
   }
 
   function saveNuke(nuke) {
-    var data = load();
+    var row = toRow(nuke);
+    var q;
     if (nuke.id) {
-      var i = data.nukes.findIndex(function (n) { return n.id === nuke.id; });
-      if (i !== -1) {
-        nuke.updatedAt = Date.now();
-        data.nukes[i] = nuke;
-      }
+      row.updated_at = new Date().toISOString();
+      q = sb.from("nukes").update(row).eq("id", nuke.id).select().single();
     } else {
-      nuke.id = uid();
-      nuke.createdAt = Date.now();
-      nuke.updatedAt = Date.now();
-      data.nukes.push(nuke);
+      q = sb.from("nukes").insert(row).select().single();
     }
-    persist(data);
-    return nuke;
+    return q.then(function (res) {
+      if (res.error) throw res.error;
+      var saved = fromRow(res.data);
+      var i = cache.nukes.findIndex(function (n) { return n.id === saved.id; });
+      if (i !== -1) cache.nukes[i] = saved; else cache.nukes.push(saved);
+      return saved;
+    });
   }
 
   function deleteNuke(id) {
-    var data = load();
-    data.nukes = data.nukes.filter(function (n) { return n.id !== id; });
-    persist(data);
+    return sb.from("nukes").delete().eq("id", id).then(function (res) {
+      if (res.error) throw res.error;
+      cache.nukes = cache.nukes.filter(function (n) { return n.id !== id; });
+    });
   }
 
-  // --- Formations (bibliothèque par côté) -------------------------------
-
-  // getFormations()            -> tout l'objet { RIGHT: {50:[],...}, ... }
-  // getFormations(side)        -> { 50:[], 90:[], 110:[], Barrack:[] }
-  // getFormations(side, type)  -> tableau de fichiers
+  /* --- Formations (lecture synchrone depuis le cache) --------------- */
   function getFormations(side, type) {
-    var f = load().formations;
-    if (!side) return f;
-    var s = f[side] || emptySide();
+    if (!side) return cache.formations;
+    var s = cache.formations[side] || {};
     if (!type) return s;
     return s[type] || [];
   }
 
+  // Envoie un fichier dans un bucket de stockage, renvoie son URL publique
+  function uploadFile(bucket, file) {
+    var dot = file.name ? file.name.lastIndexOf(".") : -1;
+    var ext = dot !== -1 ? file.name.slice(dot) : "";
+    var path = Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8) + ext;
+    return sb.storage.from(bucket).upload(path, file).then(function (res) {
+      if (res.error) throw res.error;
+      return sb.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+    });
+  }
+
+  // file = { name, url } (le fichier a déjà été envoyé via uploadFile)
   function addFormationFile(side, type, file) {
-    // file = { name, dataUrl }
-    var data = load();
-    if (!data.formations[side]) data.formations[side] = emptySide();
-    if (!data.formations[side][type]) data.formations[side][type] = [];
-    file.id = uid();
-    data.formations[side][type].push(file);
-    persist(data);
+    return sb.from("formations")
+      .insert({ side: side, type: type, name: file.name, url: file.url })
+      .select().single().then(function (res) {
+        if (res.error) throw res.error;
+        var row = res.data;
+        if (!cache.formations[side]) cache.formations[side] = {};
+        if (!cache.formations[side][type]) cache.formations[side][type] = [];
+        cache.formations[side][type].push({ id: row.id, name: row.name, url: row.url, dataUrl: row.url });
+      });
   }
 
   function deleteFormationFile(side, type, fileId) {
-    var data = load();
-    if (!data.formations[side] || !data.formations[side][type]) return;
-    data.formations[side][type] = data.formations[side][type].filter(function (f) {
-      return f.id !== fileId;
+    return sb.from("formations").delete().eq("id", fileId).then(function (res) {
+      if (res.error) throw res.error;
+      if (cache.formations[side] && cache.formations[side][type]) {
+        cache.formations[side][type] = cache.formations[side][type].filter(function (f) {
+          return f.id !== fileId;
+        });
+      }
     });
-    persist(data);
   }
 
   window.Store = {
     SIDES: SIDES,
     FORM_TYPES: FORM_TYPES,
+    init: init,
     getNukes: getNukes,
     getNuke: getNuke,
     saveNuke: saveNuke,
     deleteNuke: deleteNuke,
     getFormations: getFormations,
+    uploadFile: uploadFile,
     addFormationFile: addFormationFile,
     deleteFormationFile: deleteFormationFile,
   };

@@ -57,6 +57,11 @@
     });
   }
 
+  function showErr(e) {
+    alert("Erreur : " + (e && e.message ? e.message : e) +
+      "\n\n(Vérifie ta connexion internet et que Supabase est bien configuré.)");
+  }
+
   function openModal(html) {
     el.modalContent.innerHTML = html;
     el.modal.classList.remove("hidden");
@@ -83,7 +88,14 @@
   function showApp() {
     el.gate.classList.add("hidden");
     el.app.classList.remove("hidden");
-    route("home");
+    el.view.innerHTML = '<div class="empty">Chargement des données…</div>';
+    Store.init().then(function () {
+      route("home");
+    }).catch(function (e) {
+      el.view.innerHTML = '<div class="empty">⚠ Impossible de charger les données.<br><br>' +
+        "Détail : " + esc(e && e.message ? e.message : e) + "<br><br>" +
+        "Si c'est le tout premier lancement, vérifie que le script SQL a bien été exécuté dans Supabase.</div>";
+    });
   }
 
   /* ---------- Routing -------------------------------------------------- */
@@ -245,7 +257,9 @@
     document.getElementById("back").onclick = function () { route("home"); };
     document.getElementById("edit-nuke").onclick = function () { openNukeForm(n); };
     document.getElementById("del-nuke").onclick = function () {
-      if (confirm("Supprimer cette nuke ?")) { Store.deleteNuke(n.id); route("home"); }
+      if (confirm("Supprimer cette nuke ?")) {
+        Store.deleteNuke(n.id).then(function () { route("home"); }).catch(showErr);
+      }
     };
     document.getElementById("add-row").onclick = function () { openParticipantForm(n); };
     el.view.querySelectorAll("[data-del-row]").forEach(function (b) {
@@ -255,8 +269,7 @@
         if (confirm("Retirer " + who + " de la nuke ?")) {
           n.participants.splice(idx, 1);
           n.firstLaunch = computeFirstLaunch(n.participants);
-          Store.saveNuke(n);
-          renderNukeDetail(n.id);
+          Store.saveNuke(n).then(function () { renderNukeDetail(n.id); }).catch(showErr);
         }
       };
     });
@@ -322,9 +335,17 @@
         manual: true,
       });
       nuke.firstLaunch = computeFirstLaunch(nuke.participants);
-      Store.saveNuke(nuke);
-      closeModal();
-      renderNukeDetail(nuke.id);
+      var btn = document.getElementById("pf-save");
+      btn.disabled = true;
+      btn.textContent = "Ajout…";
+      Store.saveNuke(nuke).then(function () {
+        closeModal();
+        renderNukeDetail(nuke.id);
+      }).catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = "Ajouter";
+        showErr(e);
+      });
     };
   }
 
@@ -351,11 +372,11 @@
       "</div>"
     );
 
-    var imageData = existing ? existing.targetImage : null;
+    var existingImage = existing ? existing.targetImage : null;
+    var imgFile = null; // nouveau fichier choisi (sera envoyé au stockage)
 
     document.getElementById("img").onchange = function (e) {
-      var f = e.target.files[0];
-      if (f) fileToDataUrl(f).then(function (d) { imageData = d; });
+      imgFile = e.target.files[0] || null;
     };
 
     document.getElementById("preview-btn").onclick = function () {
@@ -369,19 +390,35 @@
         alert("Le pavé semble vide ou mal formaté. Vérifie le format.");
         return;
       }
-      var nuke = {
-        id: existing ? existing.id : null,
-        target: parsed.target,
-        side: parsed.side,
-        spread: parsed.spread,
-        participants: parsed.participants,
-        firstLaunch: parsed.firstLaunch,
-        raw: parsed.raw,
-        targetImage: imageData || null,
-      };
-      var saved = Store.saveNuke(nuke);
-      closeModal();
-      route("nuke", saved.id);
+      var btn = document.getElementById("save-nuke");
+      btn.disabled = true;
+      btn.textContent = "Enregistrement…";
+
+      // 1) envoyer l'image si une nouvelle a été choisie, sinon garder l'ancienne
+      var imgStep = imgFile
+        ? Store.uploadFile("targets", imgFile)
+        : Promise.resolve(existingImage);
+
+      imgStep.then(function (imageUrl) {
+        var nuke = {
+          id: existing ? existing.id : null,
+          target: parsed.target,
+          side: parsed.side,
+          spread: parsed.spread,
+          participants: parsed.participants,
+          firstLaunch: parsed.firstLaunch,
+          raw: parsed.raw,
+          targetImage: imageUrl || null,
+        };
+        return Store.saveNuke(nuke);
+      }).then(function (saved) {
+        closeModal();
+        route("nuke", saved.id);
+      }).catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = "Enregistrer";
+        showErr(e);
+      });
     };
 
     // Aperçu auto à l'ouverture si on édite
@@ -457,17 +494,18 @@
       inp.onchange = function (e) {
         var f = e.target.files[0];
         if (!f) return;
-        fileToDataUrl(f).then(function (d) {
-          Store.addFormationFile(inp.dataset.uploadSide, inp.dataset.uploadType,
-            { name: f.name, dataUrl: d });
+        var side = inp.dataset.uploadSide, type = inp.dataset.uploadType;
+        Store.uploadFile("formations", f).then(function (url) {
+          return Store.addFormationFile(side, type, { name: f.name, url: url });
+        }).then(function () {
           renderFormations();
-        });
+        }).catch(showErr);
       };
     });
     el.view.querySelectorAll("[data-del]").forEach(function (b) {
       b.onclick = function () {
-        Store.deleteFormationFile(b.dataset.side, b.dataset.type, b.dataset.del);
-        renderFormations();
+        Store.deleteFormationFile(b.dataset.side, b.dataset.type, b.dataset.del)
+          .then(function () { renderFormations(); }).catch(showErr);
       };
     });
     refreshIcons();
