@@ -1,34 +1,34 @@
-# ⚔️ Guild War Planner — version locale
+# ⚔️ Guild War Planner
 
-Site de coordination d'attaques pour la guilde. **Aucune installation.**
+Site de coordination d'attaques pour la guilde. Données **partagées** entre tous
+les joueurs (via Supabase), hébergé sur **Vercel**.
 
-## Ouvrir le site
-- Double-clique sur **`Ouvrir le site.bat`** (ou sur `index.html`).
+## Accès
+- Site en ligne : **https://optimisation-goat.vercel.app**
 - Mot de passe d'entrée : **`guerre2026`**
   (modifiable dans `js/app.js`, ligne `var PASSWORD = ...`).
 
 ## Ce que ça fait
-- **Nukes** : clique sur *« + Ajouter une Nuke »*, colle ton pavé Discord
-  (TARGET / SIDE / SPREAD + les lignes de joueurs), clique *« Aperçu »* pour
-  vérifier le parsing, ajoute le screenshot du château cible, puis *Enregistrer*.
-- Chaque nuke devient une **card**. Au clic → tableau complet des joueurs +
-  screenshot cible + **fichiers de formation du bon côté** (chargés auto).
-- **Formations** : dépose tes fichiers `.cas` (ou images) par côté
-  (RIGHT / LEFT / FRONT / BACK). Ils s'affichent ensuite sur toutes les
-  nukes du même côté.
+- **Nukes** : « + Ajouter une Nuke », colle le pavé Discord
+  (TARGET / SIDE / SPREAD + lignes de joueurs), « Aperçu » pour vérifier le
+  parsing, ajoute le screenshot du château cible, puis *Enregistrer*.
+- Chaque nuke devient une **card** → clic → tableau complet des joueurs,
+  screenshot cible, et **fichiers de formation du bon côté** (chargés auto).
+- On peut **ajouter / retirer des lignes de joueurs** à la main dans une nuke.
+- **Formations** : dépose les fichiers `.cas` par côté (RIGHT / LEFT / FRONT /
+  BACK) **et par type** (50 / 90 / 110 / Barrack). Chaque joueur récupère
+  automatiquement le fichier de son côté + son type.
 
-## ⚠️ Important — version locale
-- Les données sont stockées **dans ton navigateur, sur ce PC uniquement**.
-  Les autres joueurs ne les voient pas encore.
-- C'est normal : c'est la maquette pour valider le fonctionnement et la
-  direction. La **version partagée en ligne** (Supabase + hébergement gratuit)
-  viendra ensuite — il suffira de remplacer le fichier `js/store.js`.
-
-## Structure
+## Architecture
 ```
 index.html        page principale
 css/styles.css    design
 js/parser.js      transforme le pavé Discord en données
-js/store.js       stockage (local pour l'instant -> Supabase plus tard)
+js/store.js       stockage partagé (Supabase : base + fichiers)
 js/app.js         interface + navigation
+supabase-setup.sql  script de création des tables/buckets Supabase
 ```
+
+## Mettre à jour le site
+Le dépôt GitHub est connecté à Vercel : à chaque `git push` sur `main`,
+Vercel redéploie automatiquement.
