@@ -1,0 +1,7 @@
+# Fichiers système Windows / macOS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Lanceur local (inutile en ligne)
+Ouvrir le site.bat
