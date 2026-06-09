@@ -58,8 +58,8 @@
   }
 
   function showErr(e) {
-    alert("Erreur : " + (e && e.message ? e.message : e) +
-      "\n\n(Vérifie ta connexion internet et que Supabase est bien configuré.)");
+    alert("Error: " + (e && e.message ? e.message : e) +
+      "\n\n(Check your internet connection and that Supabase is properly configured.)");
   }
 
   function openModal(html) {
@@ -79,7 +79,7 @@
       sessionStorage.setItem("gwp_ok", "1");
       showApp();
     } else {
-      el.gateError.textContent = "Mot de passe incorrect.";
+      el.gateError.textContent = "Incorrect password.";
       el.gateInput.value = "";
       el.gateInput.focus();
     }
@@ -88,13 +88,13 @@
   function showApp() {
     el.gate.classList.add("hidden");
     el.app.classList.remove("hidden");
-    el.view.innerHTML = '<div class="empty">Chargement des données…</div>';
+    el.view.innerHTML = '<div class="empty">Loading data…</div>';
     Store.init().then(function () {
       route("home");
     }).catch(function (e) {
-      el.view.innerHTML = '<div class="empty">⚠ Impossible de charger les données.<br><br>' +
-        "Détail : " + esc(e && e.message ? e.message : e) + "<br><br>" +
-        "Si c'est le tout premier lancement, vérifie que le script SQL a bien été exécuté dans Supabase.</div>";
+      el.view.innerHTML = '<div class="empty">⚠ Unable to load data.<br><br>' +
+        "Details: " + esc(e && e.message ? e.message : e) + "<br><br>" +
+        "If this is the very first launch, make sure the SQL script has been run in Supabase.</div>";
     });
   }
 
@@ -133,7 +133,7 @@
           "</div>" +
           '<div class="card-side ' + sideClass + '">' + esc(n.side || "—") + "</div>" +
           '<div class="card-meta">' +
-            "<span>" + ic("users") + " " + n.participants.length + " joueurs</span>" +
+            "<span>" + ic("users") + " " + n.participants.length + " players</span>" +
             (n.firstLaunch ? "<span>" + ic("rocket") + " " + esc(n.firstLaunch) + "</span>" : "") +
           "</div>" +
         "</div>"
@@ -143,12 +143,12 @@
     el.view.innerHTML =
       '<div class="page-head">' +
         "<h2>Nukes</h2>" +
-        '<button class="btn primary" id="add-nuke">' + ic("plus") + ' Ajouter une Nuke</button>' +
+        '<button class="btn primary" id="add-nuke">' + ic("plus") + ' Add a Nuke</button>' +
       "</div>" +
       (nukes.length
         ? '<div class="cards">' + cards + "</div>"
-        : '<div class="empty">Aucune nuke pour l\'instant. Clique sur ' +
-          '<b>« + Ajouter une Nuke »</b> et colle ton pavé Discord.</div>');
+        : '<div class="empty">No nukes yet. Click ' +
+          '<b>“+ Add a Nuke”</b> and paste your Discord block.</div>');
 
     document.getElementById("add-nuke").onclick = function () { openNukeForm(null); };
     el.view.querySelectorAll(".card").forEach(function (c) {
@@ -169,15 +169,15 @@
       var formCell;
       if (files.length) {
         formCell = '<a class="form-link" href="' + files[0].dataUrl + '" download="' +
-          esc(files[0].name) + '" title="Télécharger ' + esc(files[0].name) + '">' +
+          esc(files[0].name) + '" title="Download ' + esc(files[0].name) + '">' +
           ic("download") + " " + esc(p.formation) + "</a>";
       } else {
         formCell = esc(p.formation) +
-          (ft ? ' <span class="form-missing" title="Aucun fichier ' + esc(n.side) + "/" +
-            esc(ft) + ' chargé">⚠</span>' : "");
+          (ft ? ' <span class="form-missing" title="No ' + esc(n.side) + "/" +
+            esc(ft) + ' file loaded">⚠</span>' : "");
       }
       var manualMark = p.manual
-        ? ' <span class="manual-dot" title="Ajouté manuellement">' + ic("user-plus") + "</span>"
+        ? ' <span class="manual-dot" title="Added manually">' + ic("user-plus") + "</span>"
         : "";
       return (
         "<tr>" +
@@ -190,7 +190,7 @@
           "<td>" + formCell + "</td>" +
           "<td class='strong'>" + esc(p.launch) + "</td>" +
           "<td class='row-action'><button class='row-del' data-del-row='" + idx +
-            "' title='Retirer ce joueur'>" + ic("x") + "</button></td>" +
+            "' title='Remove this player'>" + ic("x") + "</button></td>" +
         "</tr>"
       );
     }).join("");
@@ -211,15 +211,15 @@
           return '<div class="form-type-row"><span class="form-type-badge">' + esc(t) +
             "</span>" + '<div class="file-list">' + chips + "</div></div>";
         }).join("")
-      : '<span class="muted">Aucun fichier pour le côté ' + esc(n.side || "?") +
-        '. Ajoute-les dans l\'onglet <b>Formations</b>.</span>';
+      : '<span class="muted">No files for the ' + esc(n.side || "?") +
+        ' side. Add them in the <b>Formations</b> tab.</span>';
 
     var img = n.targetImage
-      ? '<img class="target-img" src="' + n.targetImage + '" alt="château cible" data-zoom="' + n.targetImage + '">'
-      : '<div class="target-img placeholder">Pas de screenshot</div>';
+      ? '<img class="target-img" src="' + n.targetImage + '" alt="target castle" data-zoom="' + n.targetImage + '">'
+      : '<div class="target-img placeholder">No screenshot</div>';
 
     el.view.innerHTML =
-      '<button class="btn ghost" id="back">' + ic("arrow-left") + ' Retour</button>' +
+      '<button class="btn ghost" id="back">' + ic("arrow-left") + ' Back</button>' +
       '<div class="detail">' +
         '<div class="detail-head">' +
           "<div>" +
@@ -230,26 +230,26 @@
             "</div>" +
           "</div>" +
           "<div class='detail-actions'>" +
-            '<button class="btn" id="edit-nuke">' + ic("square-pen") + ' Modifier</button>' +
-            '<button class="btn danger" id="del-nuke">' + ic("trash-2") + ' Supprimer</button>' +
+            '<button class="btn" id="edit-nuke">' + ic("square-pen") + ' Edit</button>' +
+            '<button class="btn danger" id="del-nuke">' + ic("trash-2") + ' Delete</button>' +
           "</div>" +
         "</div>" +
 
         '<div class="detail-grid">' +
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
-              "<th>ID</th><th>Joueur</th><th>Type</th><th>Qté</th>" +
-              "<th>Marche</th><th>Off.</th><th>Formation</th><th>Launch</th><th></th>" +
+              "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th>" +
+              "<th>March</th><th>Off.</th><th>Formation</th><th>Launch</th><th></th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
-            '<button class="btn add-row" id="add-row">' + ic("plus") + " Ajouter une ligne</button>" +
+            '<button class="btn add-row" id="add-row">' + ic("plus") + " Add a row</button>" +
           "</div>" +
           '<div class="detail-aside">' +
-            "<h4>Château cible</h4>" + img +
+            "<h4>Target castle</h4>" + img +
           "</div>" +
         "</div>" +
 
         '<div class="formations-box">' +
-          "<h4>" + ic("paperclip") + " Formations (" + esc(n.side || "?") + ") — chargées automatiquement</h4>" +
+          "<h4>" + ic("paperclip") + " Formations (" + esc(n.side || "?") + ") — loaded automatically</h4>" +
           '<div class="file-list">' + formationFiles + "</div>" +
         "</div>" +
       "</div>";
@@ -257,7 +257,7 @@
     document.getElementById("back").onclick = function () { route("home"); };
     document.getElementById("edit-nuke").onclick = function () { openNukeForm(n); };
     document.getElementById("del-nuke").onclick = function () {
-      if (confirm("Supprimer cette nuke ?")) {
+      if (confirm("Delete this nuke?")) {
         Store.deleteNuke(n.id).then(function () { route("home"); }).catch(showErr);
       }
     };
@@ -265,8 +265,8 @@
     el.view.querySelectorAll("[data-del-row]").forEach(function (b) {
       b.onclick = function () {
         var idx = parseInt(b.dataset.delRow, 10);
-        var who = n.participants[idx] ? (n.participants[idx].name || "cette ligne") : "cette ligne";
-        if (confirm("Retirer " + who + " de la nuke ?")) {
+        var who = n.participants[idx] ? (n.participants[idx].name || "this row") : "this row";
+        if (confirm("Remove " + who + " from the nuke?")) {
           n.participants.splice(idx, 1);
           n.firstLaunch = computeFirstLaunch(n.participants);
           Store.saveNuke(n).then(function () { renderNukeDetail(n.id); }).catch(showErr);
@@ -299,22 +299,22 @@
     }).join("");
 
     openModal(
-      '<div class="modal-head"><h3>Ajouter un joueur</h3>' +
+      '<div class="modal-head"><h3>Add a player</h3>' +
         '<button class="x" data-close>✕</button></div>' +
       '<div class="pform">' +
-        '<div class="pf"><label>Joueur *</label><input id="pf-name" placeholder="Pseudo"></div>' +
+        '<div class="pf"><label>Player *</label><input id="pf-name" placeholder="Nickname"></div>' +
         '<div class="pf"><label>ID</label><input id="pf-id" placeholder="2571"></div>' +
         '<div class="pf"><label>Type</label><select id="pf-type">' + typeOpts + "</select></div>" +
-        '<div class="pf"><label>Quantité</label><input id="pf-qty" placeholder="x4"></div>' +
-        '<div class="pf"><label>Marche</label><input id="pf-march" placeholder="16m32s"></div>' +
+        '<div class="pf"><label>Quantity</label><input id="pf-qty" placeholder="x4"></div>' +
+        '<div class="pf"><label>March</label><input id="pf-march" placeholder="16m32s"></div>' +
         '<div class="pf"><label>Offset</label><input id="pf-offset" placeholder="+0s"></div>' +
         '<div class="pf"><label>Formation</label><input id="pf-form" list="pf-forms" placeholder="90">' +
           '<datalist id="pf-forms">' + formOpts + "</datalist></div>" +
         '<div class="pf"><label>Launch (HH:MM)</label><input id="pf-launch" placeholder="16:36"></div>' +
       "</div>" +
       '<div class="modal-foot">' +
-        '<button class="btn ghost" data-close>Annuler</button>' +
-        '<button class="btn primary" id="pf-save">Ajouter</button>' +
+        '<button class="btn ghost" data-close>Cancel</button>' +
+        '<button class="btn primary" id="pf-save">Add</button>' +
       "</div>"
     );
 
@@ -322,7 +322,7 @@
 
     document.getElementById("pf-save").onclick = function () {
       var name = val("pf-name");
-      if (!name) { alert("Le pseudo du joueur est obligatoire."); return; }
+      if (!name) { alert("The player's nickname is required."); return; }
       nuke.participants.push({
         id: val("pf-id"),
         name: name,
@@ -337,13 +337,13 @@
       nuke.firstLaunch = computeFirstLaunch(nuke.participants);
       var btn = document.getElementById("pf-save");
       btn.disabled = true;
-      btn.textContent = "Ajout…";
+      btn.textContent = "Adding…";
       Store.saveNuke(nuke).then(function () {
         closeModal();
         renderNukeDetail(nuke.id);
       }).catch(function (e) {
         btn.disabled = false;
-        btn.textContent = "Ajouter";
+        btn.textContent = "Add";
         showErr(e);
       });
     };
@@ -357,18 +357,18 @@
       ? '<img class="mini-preview" src="' + existing.targetImage + '">' : "";
 
     openModal(
-      '<div class="modal-head"><h3>' + (existing ? "Modifier" : "Nouvelle") +
+      '<div class="modal-head"><h3>' + (existing ? "Edit" : "New") +
         ' nuke</h3><button class="x" data-close>✕</button></div>' +
-      '<label class="lbl">Colle le pavé Discord ici :</label>' +
-      '<textarea id="raw" class="raw" placeholder="TARGET : 61667&#10;SIDE : RIGHT&#10;SPREAD : 7 seconds&#10;&#10;2571 [pseudo] | army | x4 | 16m32s | +4s - 90 form - &quot;Launch&quot; at 16:36">' +
+      '<label class="lbl">Paste the Discord block here:</label>' +
+      '<textarea id="raw" class="raw" placeholder="TARGET : 61667&#10;SIDE : RIGHT&#10;SPREAD : 7 seconds&#10;&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form - &quot;Launch&quot; at 16:36">' +
         esc(raw) + "</textarea>" +
-      '<button class="btn" id="preview-btn">' + ic("eye") + ' Aperçu du parsing</button>' +
+      '<button class="btn" id="preview-btn">' + ic("eye") + ' Parse preview</button>' +
       '<div id="preview" class="preview-zone"></div>' +
-      '<label class="lbl">Screenshot du château cible (optionnel) :</label>' +
+      '<label class="lbl">Target castle screenshot (optional):</label>' +
       '<input type="file" id="img" accept="image/*"> ' + imgPreview +
       '<div class="modal-foot">' +
-        '<button class="btn ghost" data-close>Annuler</button>' +
-        '<button class="btn primary" id="save-nuke">Enregistrer</button>' +
+        '<button class="btn ghost" data-close>Cancel</button>' +
+        '<button class="btn primary" id="save-nuke">Save</button>' +
       "</div>"
     );
 
@@ -387,12 +387,12 @@
     document.getElementById("save-nuke").onclick = function () {
       var parsed = NukeParser.parseNuke(document.getElementById("raw").value);
       if (!parsed.target && parsed.participants.length === 0) {
-        alert("Le pavé semble vide ou mal formaté. Vérifie le format.");
+        alert("The block looks empty or malformed. Check the format.");
         return;
       }
       var btn = document.getElementById("save-nuke");
       btn.disabled = true;
-      btn.textContent = "Enregistrement…";
+      btn.textContent = "Saving…";
 
       // 1) envoyer l'image si une nouvelle a été choisie, sinon garder l'ancienne
       var imgStep = imgFile
@@ -416,19 +416,19 @@
         route("nuke", saved.id);
       }).catch(function (e) {
         btn.disabled = false;
-        btn.textContent = "Enregistrer";
+        btn.textContent = "Save";
         showErr(e);
       });
     };
 
-    // Aperçu auto à l'ouverture si on édite
+    // Auto-preview on open when editing
     if (raw) renderPreview(NukeParser.parseNuke(raw));
   }
 
   function renderPreview(parsed) {
     var z = document.getElementById("preview");
     if (!parsed.target && parsed.participants.length === 0) {
-      z.innerHTML = '<span class="muted">Rien de détecté pour l\'instant.</span>';
+      z.innerHTML = '<span class="muted">Nothing detected yet.</span>';
       return;
     }
     var rows = parsed.participants.map(function (p) {
@@ -438,11 +438,11 @@
         "</td><td>" + esc(p.launch) + "</td></tr>";
     }).join("");
     z.innerHTML =
-      '<div class="preview-head">' + ic("circle-check") + ' Détecté : <b>TARGET ' + esc(parsed.target || "?") +
+      '<div class="preview-head">' + ic("circle-check") + ' Detected: <b>TARGET ' + esc(parsed.target || "?") +
       "</b> · SIDE <b>" + esc(parsed.side || "?") + "</b> · SPREAD " +
-      esc(parsed.spread || "?") + " · " + parsed.participants.length + " joueurs</div>" +
-      '<table class="ptable small"><thead><tr><th>ID</th><th>Joueur</th><th>Type</th>' +
-      "<th>Qté</th><th>Marche</th><th>Off.</th><th>Form.</th><th>Launch</th></tr></thead>" +
+      esc(parsed.spread || "?") + " · " + parsed.participants.length + " players</div>" +
+      '<table class="ptable small"><thead><tr><th>ID</th><th>Player</th><th>Type</th>' +
+      "<th>Qty</th><th>March</th><th>Off.</th><th>Form.</th><th>Launch</th></tr></thead>" +
       "<tbody>" + rows + "</tbody></table>";
     refreshIcons();
   }
@@ -459,13 +459,13 @@
               return '<div class="file-row"><a class="file-chip" href="' + f.dataUrl +
                 '" download="' + esc(f.name) + '">' + ic("paperclip") + " " + esc(f.name) + "</a>" +
                 '<button class="x small" data-del="' + f.id + '" data-side="' + side +
-                '" data-type="' + t + '" title="Supprimer">✕</button></div>';
+                '" data-type="' + t + '" title="Delete">✕</button></div>';
             }).join("")
-          : '<span class="muted small">Aucun fichier.</span>';
+          : '<span class="muted small">No files.</span>';
         return (
           '<div class="ftype">' +
             '<div class="ftype-head"><span class="form-type-badge">' + esc(t) + "</span>" +
-              '<label class="upload-mini" title="Ajouter un fichier ' + side + "/" + t + '">' +
+              '<label class="upload-mini" title="Add a ' + side + "/" + t + ' file">' +
                 ic("plus") + '<input type="file" data-upload-side="' + side +
                 '" data-upload-type="' + t + '" hidden></label>' +
             "</div>" +
@@ -485,9 +485,9 @@
 
     el.view.innerHTML =
       '<div class="page-head"><h2>Formations</h2></div>' +
-      '<p class="muted intro">Range tes fichiers <b>.cas</b> par côté puis par type ' +
-        "(50 / 90 / 110 / Barrack). Sur une nuke, chaque joueur récupère " +
-        "automatiquement le fichier de son côté et de son type.</p>" +
+      '<p class="muted intro">Organize your <b>.cas</b> files by side then by type ' +
+        "(50 / 90 / 110 / Barrack). On a nuke, each player automatically gets " +
+        "the file matching their side and type.</p>" +
       '<div class="formations-grid">' + blocks + "</div>";
 
     el.view.querySelectorAll("[data-upload-side]").forEach(function (inp) {

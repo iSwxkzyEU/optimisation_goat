@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,20 +10,20 @@
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
-  <!-- ÉCRAN MOT DE PASSE -->
+  <!-- PASSWORD SCREEN -->
   <div id="gate" class="gate">
     <div class="gate-box">
       <h1 class="logo"><i data-lucide="swords"></i> GUILD WAR PLANNER</h1>
-      <p class="gate-sub">Accès réservé aux membres de la guilde</p>
-      <input id="gate-input" type="password" placeholder="Mot de passe" autocomplete="off" />
-      <button id="gate-btn">Entrer</button>
+      <p class="gate-sub">Guild members only</p>
+      <input id="gate-input" type="password" placeholder="Password" autocomplete="off" />
+      <button id="gate-btn">Enter</button>
       <p id="gate-error" class="gate-error"></p>
     </div>
   </div>
 
   <!-- APPLICATION -->
   <div id="app" class="app hidden">
-    <!-- Barre latérale -->
+    <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand" data-route="home">
         <i data-lucide="swords"></i><span class="brand-text">GUILD WAR PLANNER</span>
@@ -33,16 +33,16 @@
         <button class="nav-btn" data-route="formations"><i data-lucide="layout-grid"></i><span>Formations</span></button>
       </nav>
       <div class="sidebar-soon">
-        <span class="sidebar-label">À venir</span>
-        <span class="sidebar-soon-item">Autres catégories…</span>
+        <span class="sidebar-label">Coming soon</span>
+        <span class="sidebar-soon-item">More categories…</span>
       </div>
-      <div class="sidebar-foot"><i data-lucide="shield"></i> Guilde · 2026</div>
+      <div class="sidebar-foot"><i data-lucide="shield"></i> Guild · 2026</div>
     </aside>
 
-    <!-- Voile sombre (mobile) -->
+    <!-- Dark overlay (mobile) -->
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <!-- Contenu principal -->
+    <!-- Main content -->
     <div class="main">
       <header class="mobile-bar">
         <button class="icon-btn" id="menu-toggle"><i data-lucide="menu"></i></button>
@@ -52,15 +52,15 @@
     </div>
   </div>
 
-  <!-- MODALE (création / édition nuke, agrandissement image) -->
+  <!-- MODAL (create / edit nuke, image zoom) -->
   <div id="modal" class="modal hidden">
     <div class="modal-backdrop" data-close></div>
     <div id="modal-content" class="modal-content"></div>
   </div>
 
-  <!-- Lucide : la bibliothèque d'icônes officielle de shadcn -->
+  <!-- Lucide: shadcn's official icon library -->
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
-  <!-- Supabase : stockage partagé (base de données + fichiers) -->
+  <!-- Supabase: shared storage (database + files) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="js/parser.js"></script>
   <script src="js/store.js"></script>
