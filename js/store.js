@@ -23,7 +23,7 @@
   var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   // Cache mémoire (rempli par init, relu par les getters synchrones)
-  var cache = { nukes: [], formations: emptyFormations() };
+  var cache = { nukes: [], formations: emptyFormations(), categories: [] };
 
   function emptyFormations() {
     var f = {};
@@ -36,7 +36,16 @@
 
   /* --- Chargement initial ------------------------------------------- */
   function init() {
-    return Promise.all([loadNukes(), loadFormations()]);
+    return Promise.all([loadNukes(), loadFormations(), loadCategories()]);
+  }
+
+  function loadCategories() {
+    return sb.from("categories").select("*").then(function (res) {
+      if (res.error) throw res.error;
+      cache.categories = (res.data || []).map(function (r) {
+        return { id: r.id, name: r.name, position: r.position || 0 };
+      });
+    });
   }
 
   function loadNukes() {
@@ -65,6 +74,7 @@
       id: r.id,
       target: r.target,
       targetPlayer: r.target_player || "",
+      categoryId: r.category_id || null,
       side: r.side,
       spread: r.spread,
       participants: r.participants || [],
@@ -79,6 +89,7 @@
     return {
       target: nuke.target || null,
       target_player: nuke.targetPlayer || null,
+      category_id: nuke.categoryId || null,
       side: nuke.side || null,
       spread: nuke.spread || null,
       participants: nuke.participants || [],
@@ -121,6 +132,40 @@
     return sb.from("nukes").delete().eq("id", id).then(function (res) {
       if (res.error) throw res.error;
       cache.nukes = cache.nukes.filter(function (n) { return n.id !== id; });
+    });
+  }
+
+  /* --- Catégories / carousels --------------------------------------- */
+  function getCategories() {
+    return cache.categories.slice().sort(function (a, b) {
+      return (a.position || 0) - (b.position || 0);
+    });
+  }
+
+  function addCategory(name) {
+    var row = { name: name, position: Date.now() };
+    return sb.from("categories").insert(row).select().single().then(function (res) {
+      if (res.error) throw res.error;
+      var cat = { id: res.data.id, name: res.data.name, position: res.data.position || 0 };
+      cache.categories.push(cat);
+      return cat;
+    });
+  }
+
+  function renameCategory(id, name) {
+    return sb.from("categories").update({ name: name }).eq("id", id).then(function (res) {
+      if (res.error) throw res.error;
+      var c = cache.categories.find(function (x) { return x.id === id; });
+      if (c) c.name = name;
+    });
+  }
+
+  function deleteCategory(id) {
+    return sb.from("categories").delete().eq("id", id).then(function (res) {
+      if (res.error) throw res.error;
+      cache.categories = cache.categories.filter(function (c) { return c.id !== id; });
+      // Les nukes liées repassent en "non rangées" (la base fait ON DELETE SET NULL)
+      cache.nukes.forEach(function (n) { if (n.categoryId === id) n.categoryId = null; });
     });
   }
 
@@ -175,6 +220,10 @@
     getNuke: getNuke,
     saveNuke: saveNuke,
     deleteNuke: deleteNuke,
+    getCategories: getCategories,
+    addCategory: addCategory,
+    renameCategory: renameCategory,
+    deleteCategory: deleteCategory,
     getFormations: getFormations,
     uploadFile: uploadFile,
     addFormationFile: addFormationFile,

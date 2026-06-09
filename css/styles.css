@@ -182,6 +182,7 @@ h1, h2, h3, h4 { font-family: "Space Grotesk", "Inter", sans-serif; letter-spaci
 
 .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 16px; }
 .page-head h2 { margin: 0; font-size: 26px; font-weight: 700; }
+.page-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .intro { margin: 6px 0 26px; max-width: 660px; color: var(--muted); font-size: 14px; line-height: 1.55; }
 
 /* ---------- Boutons ---------- */
@@ -224,6 +225,33 @@ h1, h2, h3, h4 { font-family: "Space Grotesk", "Inter", sans-serif; letter-spaci
   padding: 4px; border-radius: 6px; flex: none;
 }
 .filter-clear:hover { background: rgba(255,255,255,.07); color: var(--text); }
+
+/* ---------- Carousels (rangements par localisation) ---------- */
+.carousel { margin: 26px 0; }
+.carousel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+.carousel-title { margin: 0; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 9px; }
+.carousel-count {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 20px; padding: 1px 9px;
+}
+.carousel-actions { display: flex; gap: 6px; margin-left: auto; }
+.icon-btn-sm {
+  display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  background: transparent; border: 1px solid var(--line-2); border-radius: 9px;
+  color: var(--muted); cursor: pointer; transition: background .15s, color .15s, border-color .15s;
+}
+.icon-btn-sm:hover { background: var(--bg-3); color: var(--text); }
+.icon-btn-sm svg.lucide { width: 15px; height: 15px; }
+.carousel-track {
+  display: flex; gap: 18px; overflow-x: auto; overflow-y: hidden;
+  padding: 4px 2px 12px; scroll-snap-type: x proximity;
+}
+.carousel-track > .card { flex: 0 0 248px; scroll-snap-align: start; }
+.carousel-track::-webkit-scrollbar { height: 9px; }
+.carousel-track::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; }
+.carousel-track::-webkit-scrollbar-thumb:hover { background: var(--line); }
+.carousel-track::-webkit-scrollbar-track { background: transparent; }
+.carousel-empty { color: var(--muted); font-size: 13px; padding: 16px 2px; }
 
 /* ---------- Cards (accueil) ---------- */
 .cards {

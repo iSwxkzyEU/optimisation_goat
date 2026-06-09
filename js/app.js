@@ -144,53 +144,160 @@
 
   function renderHome() {
     var nukes = Store.getNukes();
+    var categories = Store.getCategories();
+    var hasContent = nukes.length || categories.length;
 
     el.view.innerHTML =
       '<div class="page-head">' +
         "<h2>Nukes</h2>" +
-        '<button class="btn primary" id="add-nuke">' + ic("plus") + ' Add a Nuke</button>' +
+        '<div class="page-head-actions">' +
+          '<button class="btn" id="add-cat">' + ic("folder-plus") + " New carousel</button>" +
+          '<button class="btn primary" id="add-nuke">' + ic("plus") + " Add a Nuke</button>" +
+        "</div>" +
       "</div>" +
-      (nukes.length
-        ? '<div class="filter-bar">' + ic("search") +
-            '<input id="filter-player" class="filter-input" type="text" ' +
-              'placeholder="Filter by targeted player…" value="' + esc(homeFilter) + '">' +
-            '<button class="filter-clear" id="filter-clear" title="Clear filter">' + ic("x") + "</button>" +
-          "</div>" +
-          '<div id="cards-box"></div>'
+      (hasContent
+        ? (nukes.length
+            ? '<div class="filter-bar">' + ic("search") +
+                '<input id="filter-player" class="filter-input" type="text" ' +
+                  'placeholder="Filter by targeted player…" value="' + esc(homeFilter) + '">' +
+                '<button class="filter-clear" id="filter-clear" title="Clear filter">' + ic("x") + "</button>" +
+              "</div>"
+            : "") +
+          '<div id="carousels-box"></div>'
         : '<div class="empty">No nukes yet. Click ' +
-          '<b>“+ Add a Nuke”</b> and paste your Discord block.</div>');
+          '<b>“+ Add a Nuke”</b> and paste your Discord block, ' +
+          'or <b>“+ New carousel”</b> to create a category first.</div>');
 
     document.getElementById("add-nuke").onclick = function () { openNukeForm(null); };
+    document.getElementById("add-cat").onclick = createCategoryFlow;
 
-    if (!nukes.length) return;
+    if (!hasContent) return;
 
+    var box = document.getElementById("carousels-box");
     var input = document.getElementById("filter-player");
-    var box = document.getElementById("cards-box");
 
     function paint() {
       var q = homeFilter.trim().toLowerCase();
-      var list = q
-        ? nukes.filter(function (n) {
-            return (n.targetPlayer || "").toLowerCase().indexOf(q) !== -1;
-          })
+      var visible = q
+        ? nukes.filter(function (n) { return (n.targetPlayer || "").toLowerCase().indexOf(q) !== -1; })
         : nukes;
-      box.innerHTML = list.length
-        ? '<div class="cards">' + list.map(cardHtml).join("") + "</div>"
-        : '<div class="empty">No nuke targets “' + esc(homeFilter) + "”.</div>";
+
+      // Regroupe les nukes par catégorie
+      var byCat = {};
+      var uncategorized = [];
+      visible.forEach(function (n) {
+        if (n.categoryId && categories.some(function (c) { return c.id === n.categoryId; })) {
+          (byCat[n.categoryId] = byCat[n.categoryId] || []).push(n);
+        } else {
+          uncategorized.push(n);
+        }
+      });
+
+      var html = "";
+      if (uncategorized.length) html += carouselHtml(null, "Uncategorized", uncategorized);
+      categories.forEach(function (c) {
+        var list = byCat[c.id] || [];
+        if (q && !list.length) return; // pendant un filtre, on masque les rangées vides
+        html += carouselHtml(c, c.name, list);
+      });
+      if (!html) html = '<div class="empty">No nuke targets “' + esc(homeFilter) + "”.</div>";
+
+      box.innerHTML = html;
       box.querySelectorAll(".card").forEach(function (c) {
         c.onclick = function () { route("nuke", c.dataset.nuke); };
+      });
+      box.querySelectorAll("[data-rename-cat]").forEach(function (b) {
+        b.onclick = function () { renameCategoryFlow(b.dataset.renameCat); };
+      });
+      box.querySelectorAll("[data-del-cat]").forEach(function (b) {
+        b.onclick = function () { deleteCategoryFlow(b.dataset.delCat); };
       });
       refreshIcons();
     }
 
-    input.oninput = function () { homeFilter = input.value; paint(); };
-    document.getElementById("filter-clear").onclick = function () {
-      homeFilter = "";
-      input.value = "";
-      paint();
-      input.focus();
-    };
+    if (input) {
+      input.oninput = function () { homeFilter = input.value; paint(); };
+      document.getElementById("filter-clear").onclick = function () {
+        homeFilter = "";
+        input.value = "";
+        paint();
+        input.focus();
+      };
+    }
     paint();
+  }
+
+  // Une rangée "carousel" : titre + tuiles qui défilent horizontalement
+  function carouselHtml(category, title, list) {
+    var actions = category
+      ? '<div class="carousel-actions">' +
+          '<button class="icon-btn-sm" data-rename-cat="' + category.id + '" title="Rename carousel">' + ic("pencil") + "</button>" +
+          '<button class="icon-btn-sm" data-del-cat="' + category.id + '" title="Delete carousel">' + ic("trash-2") + "</button>" +
+        "</div>"
+      : "";
+    var tiles = list.length
+      ? list.map(cardHtml).join("")
+      : '<div class="carousel-empty">Empty — pick this carousel on a nuke from its form.</div>';
+    return (
+      '<section class="carousel">' +
+        '<div class="carousel-head">' +
+          '<h3 class="carousel-title">' + esc(title) +
+            ' <span class="carousel-count">' + list.length + "</span></h3>" +
+          actions +
+        "</div>" +
+        '<div class="carousel-track">' + tiles + "</div>" +
+      "</section>"
+    );
+  }
+
+  /* ---------- Catégories (carousels) : créer / renommer / supprimer --- */
+
+  function openTextPrompt(title, label, initial, okText, placeholder, onOk) {
+    openModal(
+      '<div class="modal-head"><h3>' + esc(title) + '</h3><button class="x" data-close>✕</button></div>' +
+      '<label class="lbl">' + esc(label) + "</label>" +
+      '<input type="text" id="tp-input" class="modal-input" placeholder="' + esc(placeholder || "") +
+        '" value="' + esc(initial || "") + '">' +
+      '<div class="modal-foot">' +
+        '<button class="btn ghost" data-close>Cancel</button>' +
+        '<button class="btn primary" id="tp-ok">' + esc(okText) + "</button>" +
+      "</div>"
+    );
+    var inp = document.getElementById("tp-input");
+    inp.focus();
+    function submit() {
+      var v = (inp.value || "").trim();
+      if (!v) { inp.focus(); return; }
+      var btn = document.getElementById("tp-ok");
+      btn.disabled = true;
+      btn.textContent = "…";
+      onOk(v, function (e) { btn.disabled = false; btn.textContent = okText; showErr(e); });
+    }
+    document.getElementById("tp-ok").onclick = submit;
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+  }
+
+  function createCategoryFlow() {
+    openTextPrompt("New carousel", "Carousel name (location)", "", "Create", "e.g. North bridge",
+      function (name, onErr) {
+        Store.addCategory(name).then(function () { closeModal(); renderHome(); }).catch(onErr);
+      });
+  }
+
+  function renameCategoryFlow(id) {
+    var cat = Store.getCategories().find(function (c) { return c.id === id; });
+    openTextPrompt("Rename carousel", "Carousel name", cat ? cat.name : "", "Rename", "",
+      function (name, onErr) {
+        Store.renameCategory(id, name).then(function () { closeModal(); renderHome(); }).catch(onErr);
+      });
+  }
+
+  function deleteCategoryFlow(id) {
+    var cat = Store.getCategories().find(function (c) { return c.id === id; });
+    var nm = cat ? cat.name : "";
+    if (confirm("Delete carousel “" + nm + "”?\n\nIts nukes are NOT deleted — they move back to Uncategorized.")) {
+      Store.deleteCategory(id).then(function () { renderHome(); }).catch(showErr);
+    }
   }
 
   /* ---------- Vue : Détail d'une nuke ---------------------------------- */
@@ -396,12 +503,21 @@
     var imgPreview = existing && existing.targetImage
       ? '<img class="mini-preview" src="' + existing.targetImage + '">' : "";
 
+    var existingCat = existing ? existing.categoryId : null;
+    var catOpts = '<option value="">— Uncategorized —</option>' +
+      Store.getCategories().map(function (c) {
+        return '<option value="' + c.id + '"' + (c.id === existingCat ? " selected" : "") +
+          ">" + esc(c.name) + "</option>";
+      }).join("");
+
     openModal(
       '<div class="modal-head"><h3>' + (existing ? "Edit" : "New") +
         ' nuke</h3><button class="x" data-close>✕</button></div>' +
       '<label class="lbl">Targeted player (enemy):</label>' +
       '<input type="text" id="target-player" class="modal-input" placeholder="Enemy player name" value="' +
         esc(existing ? (existing.targetPlayer || "") : "") + '">' +
+      '<label class="lbl">Carousel (category):</label>' +
+      '<select id="nuke-cat" class="modal-input">' + catOpts + "</select>" +
       '<label class="lbl">Paste the Discord block here:</label>' +
       '<textarea id="raw" class="raw" placeholder="TARGET : 61667&#10;SIDE : RIGHT&#10;SPREAD : 7 seconds&#10;&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form - &quot;Launch&quot; at 16:36">' +
         esc(raw) + "</textarea>" +
@@ -445,12 +561,14 @@
       // Joueur visé : saisie manuelle prioritaire, sinon en-tête PLAYER du bloc
       var manualPlayer = (document.getElementById("target-player").value || "").trim();
       var targetPlayer = manualPlayer || parsed.targetPlayer || "";
+      var categoryId = document.getElementById("nuke-cat").value || null;
 
       imgStep.then(function (imageUrl) {
         var nuke = {
           id: existing ? existing.id : null,
           target: parsed.target,
           targetPlayer: targetPlayer,
+          categoryId: categoryId,
           side: parsed.side,
           spread: parsed.spread,
           participants: parsed.participants,

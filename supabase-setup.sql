@@ -31,17 +31,33 @@ create table if not exists public.formations (
   created_at  timestamptz default now()
 );
 
+-- Catégories = "carousels" nommés pour ranger les nukes (par localisation)
+create table if not exists public.categories (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null,
+  position    bigint default 0,
+  created_at  timestamptz default now()
+);
+
+-- Lien nuke -> catégorie (null = "Uncategorized"). Supprimer une catégorie
+-- ne supprime PAS ses nukes : elles repassent en non rangées.
+alter table public.nukes add column if not exists category_id uuid
+  references public.categories(id) on delete set null;
+
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),
 -- donc on autorise la clé publique "anon" à tout lire/écrire.
 alter table public.nukes      enable row level security;
 alter table public.formations enable row level security;
+alter table public.categories enable row level security;
 
 drop policy if exists "anon all nukes"      on public.nukes;
 drop policy if exists "anon all formations" on public.formations;
+drop policy if exists "anon all categories" on public.categories;
 
 create policy "anon all nukes"      on public.nukes      for all using (true) with check (true);
 create policy "anon all formations" on public.formations for all using (true) with check (true);
+create policy "anon all categories" on public.categories for all using (true) with check (true);
 
 -- ---------- Stockage des fichiers (buckets publics) ----------
 insert into storage.buckets (id, name, public) values ('targets', 'targets', true)
