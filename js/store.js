@@ -64,6 +64,7 @@
     return {
       id: r.id,
       target: r.target,
+      targetPlayer: r.target_player || "",
       side: r.side,
       spread: r.spread,
       participants: r.participants || [],
@@ -77,6 +78,7 @@
   function toRow(nuke) {
     return {
       target: nuke.target || null,
+      target_player: nuke.targetPlayer || null,
       side: nuke.side || null,
       spread: nuke.spread || null,
       participants: nuke.participants || [],

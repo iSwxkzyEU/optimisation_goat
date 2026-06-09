@@ -101,6 +101,8 @@
     var text = String(rawText || "").replace(/\r\n/g, "\n");
 
     var target = headerValue(text, "TARGET");
+    // Joueur ennemi visé : en-tête optionnel "PLAYER" ou "ENEMY"
+    var targetPlayer = headerValue(text, "PLAYER") || headerValue(text, "ENEMY");
     var side = headerValue(text, "SIDE").toUpperCase();
     var spread = headerValue(text, "SPREAD");
 
@@ -115,6 +117,7 @@
 
     return {
       target: target,
+      targetPlayer: targetPlayer,
       side: side,
       spread: spread,
       participants: participants,

@@ -130,6 +130,9 @@
           '<div class="card-top">' +
             '<span class="card-label">TARGET</span>' +
             '<span class="card-target">' + esc(n.target || "?") + "</span>" +
+            (n.targetPlayer
+              ? '<span class="card-player">' + ic("user") + " " + esc(n.targetPlayer) + "</span>"
+              : "") +
           "</div>" +
           '<div class="card-side ' + sideClass + '">' + esc(n.side || "—") + "</div>" +
           '<div class="card-meta">' +
@@ -224,6 +227,9 @@
         '<div class="detail-head">' +
           "<div>" +
             "<div class='detail-target'>TARGET " + esc(n.target || "?") + "</div>" +
+            (n.targetPlayer
+              ? "<div class='detail-player'>" + ic("user") + " " + esc(n.targetPlayer) + "</div>"
+              : "") +
             "<div class='detail-sub'>" +
               "<span class='side-" + esc((n.side||"").toLowerCase()) + " pill'>" + esc(n.side || "—") + "</span>" +
               "<span class='muted'>SPREAD : " + esc(n.spread || "—") + "</span>" +
@@ -359,6 +365,9 @@
     openModal(
       '<div class="modal-head"><h3>' + (existing ? "Edit" : "New") +
         ' nuke</h3><button class="x" data-close>✕</button></div>' +
+      '<label class="lbl">Targeted player (enemy):</label>' +
+      '<input type="text" id="target-player" class="modal-input" placeholder="Enemy player name" value="' +
+        esc(existing ? (existing.targetPlayer || "") : "") + '">' +
       '<label class="lbl">Paste the Discord block here:</label>' +
       '<textarea id="raw" class="raw" placeholder="TARGET : 61667&#10;SIDE : RIGHT&#10;SPREAD : 7 seconds&#10;&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form - &quot;Launch&quot; at 16:36">' +
         esc(raw) + "</textarea>" +
@@ -399,10 +408,15 @@
         ? Store.uploadFile("targets", imgFile)
         : Promise.resolve(existingImage);
 
+      // Joueur visé : saisie manuelle prioritaire, sinon en-tête PLAYER du bloc
+      var manualPlayer = (document.getElementById("target-player").value || "").trim();
+      var targetPlayer = manualPlayer || parsed.targetPlayer || "";
+
       imgStep.then(function (imageUrl) {
         var nuke = {
           id: existing ? existing.id : null,
           target: parsed.target,
+          targetPlayer: targetPlayer,
           side: parsed.side,
           spread: parsed.spread,
           participants: parsed.participants,
@@ -438,8 +452,9 @@
         "</td><td>" + esc(p.launch) + "</td></tr>";
     }).join("");
     z.innerHTML =
-      '<div class="preview-head">' + ic("circle-check") + ' Detected: <b>TARGET ' + esc(parsed.target || "?") +
-      "</b> · SIDE <b>" + esc(parsed.side || "?") + "</b> · SPREAD " +
+      '<div class="preview-head">' + ic("circle-check") + ' Detected: <b>TARGET ' + esc(parsed.target || "?") + "</b>" +
+      (parsed.targetPlayer ? " · PLAYER <b>" + esc(parsed.targetPlayer) + "</b>" : "") +
+      " · SIDE <b>" + esc(parsed.side || "?") + "</b> · SPREAD " +
       esc(parsed.spread || "?") + " · " + parsed.participants.length + " players</div>" +
       '<table class="ptable small"><thead><tr><th>ID</th><th>Player</th><th>Type</th>' +
       "<th>Qty</th><th>March</th><th>Off.</th><th>Form.</th><th>Launch</th></tr></thead>" +

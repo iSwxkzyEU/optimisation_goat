@@ -8,6 +8,7 @@
 create table if not exists public.nukes (
   id            uuid primary key default gen_random_uuid(),
   target        text,
+  target_player text,
   side          text,
   spread        text,
   participants  jsonb default '[]'::jsonb,
@@ -17,6 +18,9 @@ create table if not exists public.nukes (
   created_at    timestamptz default now(),
   updated_at    timestamptz default now()
 );
+
+-- Colonnes ajoutées après coup (idempotent, met à jour une table déjà créée)
+alter table public.nukes add column if not exists target_player text;
 
 create table if not exists public.formations (
   id          uuid primary key default gen_random_uuid(),
