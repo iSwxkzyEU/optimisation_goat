@@ -42,12 +42,13 @@
       tail = tail.replace(launchRe, "");
     }
 
-    // 2) Offset en tête : +4s / -2s / +0s
-    //    (le signe fait partie de la capture — ne pas le manger avant !)
-    var offsetRe = /^\s*([+\-]?\s*\d+\s*s)\b/i;
+    // 2) Offset en tête : +4s / -2s / +0sec / +2 seconds / 0sec …
+    //    Unité tolérante (s / sec / secs / second / seconds), normalisée en "s".
+    //    On garde le signe tel quel (peut être absent) et on recolle "<signe><nombre>s".
+    var offsetRe = /^\s*([+\-]?)\s*(\d+)\s*(?:seconds|second|secs|sec|s)\b/i;
     var om = tail.match(offsetRe);
     if (om) {
-      offset = om[1].replace(/\s+/g, "");
+      offset = (om[1] || "") + om[2] + "s"; // ex : "+2sec" -> "+2s", "0 seconds" -> "0s"
       tail = tail.replace(offsetRe, "");
     }
 
