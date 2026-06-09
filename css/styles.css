@@ -204,6 +204,27 @@ h1, h2, h3, h4 { font-family: "Space Grotesk", "Inter", sans-serif; letter-spaci
 .btn.danger { background: transparent; border-color: rgba(255,93,87,.4); color: var(--danger); }
 .btn.danger:hover { background: rgba(255,93,87,.12); }
 
+/* ---------- Barre de filtre (accueil) ---------- */
+.filter-bar {
+  display: flex; align-items: center; gap: 9px; margin: 14px 0 20px;
+  background: var(--bg-input); border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm); padding: 0 11px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.filter-bar:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+.filter-bar svg.lucide { width: 17px; height: 17px; color: var(--muted); flex: none; }
+.filter-input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--text); font-family: inherit; font-size: 14px; padding: 11px 0;
+}
+.filter-input::placeholder { color: var(--muted); }
+.filter-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--muted); cursor: pointer;
+  padding: 4px; border-radius: 6px; flex: none;
+}
+.filter-clear:hover { background: rgba(255,255,255,.07); color: var(--text); }
+
 /* ---------- Cards (accueil) ---------- */
 .cards {
   display: grid; gap: 18px;

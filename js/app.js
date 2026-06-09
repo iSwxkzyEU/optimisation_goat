@@ -101,6 +101,7 @@
   /* ---------- Routing -------------------------------------------------- */
 
   var current = "home";
+  var homeFilter = ""; // filtre "joueur visé" sur la liste des nukes (persistant)
 
   function route(name, param) {
     current = name;
@@ -121,27 +122,28 @@
 
   /* ---------- Vue : Accueil (cards) ------------------------------------ */
 
+  function cardHtml(n) {
+    var sideClass = "side-" + (n.side || "").toLowerCase();
+    return (
+      '<div class="card" data-nuke="' + n.id + '">' +
+        '<div class="card-top">' +
+          '<span class="card-label">TARGET</span>' +
+          '<span class="card-target">' + esc(n.target || "?") + "</span>" +
+          (n.targetPlayer
+            ? '<span class="card-player">' + ic("user") + " " + esc(n.targetPlayer) + "</span>"
+            : "") +
+        "</div>" +
+        '<div class="card-side ' + sideClass + '">' + esc(n.side || "—") + "</div>" +
+        '<div class="card-meta">' +
+          "<span>" + ic("users") + " " + n.participants.length + " players</span>" +
+          (n.firstLaunch ? "<span>" + ic("rocket") + " " + esc(n.firstLaunch) + "</span>" : "") +
+        "</div>" +
+      "</div>"
+    );
+  }
+
   function renderHome() {
     var nukes = Store.getNukes();
-    var cards = nukes.map(function (n) {
-      var sideClass = "side-" + (n.side || "").toLowerCase();
-      return (
-        '<div class="card" data-nuke="' + n.id + '">' +
-          '<div class="card-top">' +
-            '<span class="card-label">TARGET</span>' +
-            '<span class="card-target">' + esc(n.target || "?") + "</span>" +
-            (n.targetPlayer
-              ? '<span class="card-player">' + ic("user") + " " + esc(n.targetPlayer) + "</span>"
-              : "") +
-          "</div>" +
-          '<div class="card-side ' + sideClass + '">' + esc(n.side || "—") + "</div>" +
-          '<div class="card-meta">' +
-            "<span>" + ic("users") + " " + n.participants.length + " players</span>" +
-            (n.firstLaunch ? "<span>" + ic("rocket") + " " + esc(n.firstLaunch) + "</span>" : "") +
-          "</div>" +
-        "</div>"
-      );
-    }).join("");
 
     el.view.innerHTML =
       '<div class="page-head">' +
@@ -149,14 +151,46 @@
         '<button class="btn primary" id="add-nuke">' + ic("plus") + ' Add a Nuke</button>' +
       "</div>" +
       (nukes.length
-        ? '<div class="cards">' + cards + "</div>"
+        ? '<div class="filter-bar">' + ic("search") +
+            '<input id="filter-player" class="filter-input" type="text" ' +
+              'placeholder="Filter by targeted player…" value="' + esc(homeFilter) + '">' +
+            '<button class="filter-clear" id="filter-clear" title="Clear filter">' + ic("x") + "</button>" +
+          "</div>" +
+          '<div id="cards-box"></div>'
         : '<div class="empty">No nukes yet. Click ' +
           '<b>“+ Add a Nuke”</b> and paste your Discord block.</div>');
 
     document.getElementById("add-nuke").onclick = function () { openNukeForm(null); };
-    el.view.querySelectorAll(".card").forEach(function (c) {
-      c.onclick = function () { route("nuke", c.dataset.nuke); };
-    });
+
+    if (!nukes.length) return;
+
+    var input = document.getElementById("filter-player");
+    var box = document.getElementById("cards-box");
+
+    function paint() {
+      var q = homeFilter.trim().toLowerCase();
+      var list = q
+        ? nukes.filter(function (n) {
+            return (n.targetPlayer || "").toLowerCase().indexOf(q) !== -1;
+          })
+        : nukes;
+      box.innerHTML = list.length
+        ? '<div class="cards">' + list.map(cardHtml).join("") + "</div>"
+        : '<div class="empty">No nuke targets “' + esc(homeFilter) + "”.</div>";
+      box.querySelectorAll(".card").forEach(function (c) {
+        c.onclick = function () { route("nuke", c.dataset.nuke); };
+      });
+      refreshIcons();
+    }
+
+    input.oninput = function () { homeFilter = input.value; paint(); };
+    document.getElementById("filter-clear").onclick = function () {
+      homeFilter = "";
+      input.value = "";
+      paint();
+      input.focus();
+    };
+    paint();
   }
 
   /* ---------- Vue : Détail d'une nuke ---------------------------------- */
