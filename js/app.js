@@ -340,7 +340,6 @@
           "<td class='strong impact'>" + esc(p.impact || "") + "</td>" +
           "<td>" + sideCell + "</td>" +
           "<td>" + formCell + "</td>" +
-          "<td class='strong'>" + esc(p.launch) + "</td>" +
           "<td class='row-action'>" +
             "<button class='row-edit' data-edit-row='" + idx +
               "' title='Edit this player'>" + ic("pencil") + "</button>" +
@@ -404,7 +403,7 @@
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
               "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th>" +
-              "<th>March</th><th>Off.</th><th>Impact</th><th>Side</th><th>Formation</th><th>Launch</th><th></th>" +
+              "<th>March</th><th>Off.</th><th>Impact</th><th>Side</th><th>Formation</th><th></th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
             '<button class="btn add-row" id="add-row">' + ic("plus") + " Add a row</button>" +
           "</div>" +
@@ -497,7 +496,6 @@
         '<div class="pf"><label>Side</label><select id="pf-side">' + sideOpts + "</select></div>" +
         '<div class="pf"><label>Formation</label><input id="pf-form" list="pf-forms" placeholder="90" value="' + v("formation") + '">' +
           '<datalist id="pf-forms">' + formOpts + "</datalist></div>" +
-        '<div class="pf"><label>Launch (HH:MM)</label><input id="pf-launch" placeholder="16:36" value="' + v("launch") + '"></div>' +
       "</div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Cancel</button>' +
@@ -519,7 +517,6 @@
         offset: val("pf-offset"),
         side: val("pf-side"), // vide = côté de la nuke
         formation: val("pf-form"),
-        launch: val("pf-launch"),
       };
       if (editing) {
         // On garde les champs non exposés (impact optimisé, marque "manual")
@@ -545,25 +542,6 @@
 
   /* ---------- Optimisation des temps d'impact --------------------------- */
 
-  // "20:30" / "20:30:15" -> secondes depuis minuit (null si illisible)
-  function clockToSec(str) {
-    var m = String(str || "").trim().match(/^(\d{1,2})[:hH](\d{2})(?:[:mM](\d{2}))?$/);
-    if (!m) return null;
-    return (+m[1]) * 3600 + (+m[2]) * 60 + (+(m[3] || 0));
-  }
-
-  function secToClock(s) {
-    s = ((s % 86400) + 86400) % 86400;
-    function p(x) { return (x < 10 ? "0" : "") + x; }
-    return p(Math.floor(s / 3600)) + ":" + p(Math.floor((s % 3600) / 60)) + ":" + p(s % 60);
-  }
-
-  // Heure de tir d'une ligne pour une heure d'impact donnée (horloge) :
-  // launch = impact horloge de la ligne - sa marche
-  function launchClockFor(row, res, clockSec) {
-    return secToClock(clockSec + (row.impactSec - res.impactSec) - row.marchSec);
-  }
-
   function openOptimizeModal(n) {
     var res = NukeOptimizer.optimize(n.participants);
     if (!res.rows.length) {
@@ -571,14 +549,13 @@
       return;
     }
 
-    var rows = res.rows.map(function (r, i) {
+    var rows = res.rows.map(function (r) {
       var cls = r.offsetSec > 0 ? "off-plus" : (r.offsetSec < 0 ? "off-minus" : "");
       return "<tr><td>" + esc(r.id) + "</td><td class='strong'>" + esc(r.name) + "</td>" +
         "<td><span class='tag tag-" + esc(r.type) + "'>" + esc(r.type) + "</span></td>" +
         "<td>" + esc(r.qty) + "</td><td>" + esc(r.current) + "</td>" +
         "<td class='strong " + cls + "'>" + esc(r.offset) + "</td>" +
-        "<td class='strong impact'>" + esc(r.newTime) + "</td>" +
-        "<td class='strong' data-launch-cell='" + i + "'>—</td></tr>";
+        "<td class='strong impact'>" + esc(r.newTime) + "</td></tr>";
     }).join("");
 
     var warn = res.warnings.length
@@ -595,14 +572,9 @@
         (res.capTime ? " · final CAP at <b>" + esc(res.capTime) + "</b>" : "") +
         " · spread <b>" + res.spreadBefore + "s → " + res.spreadAfter + "s</b></div>" +
       warn +
-      '<div class="opt-clock">' +
-        '<label class="lbl" for="opt-clock">Armies impact at (clock, optional):</label>' +
-        '<input id="opt-clock" class="modal-input" placeholder="20:30:00" ' +
-          'title="HH:MM or HH:MM:SS — fills the Launch column: when each player must fire">' +
-      "</div>" +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
         "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
-        "<th>March</th><th>Send delay</th><th>Impact</th><th>Launch</th>" +
+        "<th>March</th><th>Send delay</th><th>Impact</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Close</button>' +
@@ -611,19 +583,8 @@
       "</div>"
     );
 
-    // Heure d'impact (horloge) -> remplit la colonne Launch en direct
-    var clockInput = document.getElementById("opt-clock");
-    function currentClock() { return clockToSec(clockInput.value); }
-    clockInput.oninput = function () {
-      var c = currentClock();
-      res.rows.forEach(function (r, i) {
-        var cell = document.querySelector("[data-launch-cell='" + i + "']");
-        if (cell) cell.textContent = c == null ? "—" : launchClockFor(r, res, c);
-      });
-    };
-
     document.getElementById("opt-copy").onclick = function () {
-      var txt = optimizedAsciiTable(res.rows, currentClock(), res);
+      var txt = optimizedAsciiTable(res.rows);
       navigator.clipboard.writeText(txt).then(function () {
         document.getElementById("opt-copy").innerHTML = ic("check") + " Copied!";
         refreshIcons();
@@ -633,13 +594,11 @@
     };
 
     document.getElementById("opt-apply").onclick = function () {
-      var c = currentClock();
       res.rows.forEach(function (r) {
         var p = n.participants[r.idx];
         if (!p) return;
         p.offset = r.offset;
         p.impact = r.newTime;
-        if (c != null) p.launch = launchClockFor(r, res, c);
       });
       // Réordonne le tableau selon l'ordre de tir optimisé
       // (les lignes non optimisées — temps illisible — restent en queue)
@@ -653,7 +612,6 @@
       });
       n.participants = ordered;
       n.spread = res.spreadAfter + " seconds";
-      n.firstLaunch = computeFirstLaunch(n.participants);
       var btn = document.getElementById("opt-apply");
       btn.disabled = true;
       btn.textContent = "Applying…";
@@ -668,18 +626,14 @@
     };
   }
 
-  // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code.
-  // clockSec (optionnel) ajoute la colonne Launch (heure de tir par joueur).
-  function optimizedAsciiTable(rows, clockSec, res) {
+  // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code
+  function optimizedAsciiTable(rows) {
     var headers = ["ID", "Type", "Card", "Time", "Offset", "New time"];
-    if (clockSec != null) headers.push("Launch");
     var data = rows.map(function (r) {
-      var cells = [
+      return [
         (r.id || "?") + "[" + (r.name || "?") + "]",
         r.type || "", r.qty || "", r.current, r.offset, r.newTime,
       ];
-      if (clockSec != null) cells.push(launchClockFor(r, res, clockSec));
-      return cells;
     });
     var widths = headers.map(function (h, i) {
       return data.reduce(function (w, d) {
@@ -942,8 +896,7 @@
     var rows = parsed.participants.map(function (p) {
       return "<tr><td>" + esc(p.id) + "</td><td>" + esc(p.name) + "</td><td>" +
         esc(p.type) + "</td><td>" + esc(p.qty) + "</td><td>" + esc(p.march) +
-        "</td><td>" + esc(p.offset) + "</td><td>" + esc(p.formation) +
-        "</td><td>" + esc(p.launch) + "</td></tr>";
+        "</td><td>" + esc(p.offset) + "</td><td>" + esc(p.formation) + "</td></tr>";
     }).join("");
     z.innerHTML =
       '<div class="preview-head">' + ic("circle-check") + ' Detected: <b>TARGET ' + esc(shownTarget || "?") + "</b>" +
@@ -952,7 +905,7 @@
       (parsed.spread ? " · SPREAD " + esc(parsed.spread) : "") +
       " · " + parsed.participants.length + " players</div>" +
       '<table class="ptable small"><thead><tr><th>ID</th><th>Player</th><th>Type</th>' +
-      "<th>Qty</th><th>March</th><th>Off.</th><th>Form.</th><th>Launch</th></tr></thead>" +
+      "<th>Qty</th><th>March</th><th>Off.</th><th>Form.</th></tr></thead>" +
       "<tbody>" + rows + "</tbody></table>";
     refreshIcons();
   }
