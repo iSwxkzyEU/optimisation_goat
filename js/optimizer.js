@@ -23,19 +23,25 @@
   var TARGET_SPREAD = 8; // spread total visé
   var CAP_GAP = 2;       // le CAP final arrive ~2s après la dernière armée
 
-  // "6m11s" / "45s" / "6m" -> secondes (null si illisible)
+  // "1h21m42s" / "6m11s" / "45s" / "6m" -> secondes (null si illisible)
   function toSeconds(str) {
     var s = String(str || "").trim().toLowerCase();
-    var m = s.match(/^(?:(\d+)\s*m)?\s*(?:(\d+)\s*s?)?$/);
-    if (!m || (m[1] == null && m[2] == null)) return null;
-    return parseInt(m[1] || 0, 10) * 60 + parseInt(m[2] || 0, 10);
+    var m = s.match(/^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s?)?$/);
+    if (!m || (m[1] == null && m[2] == null && m[3] == null)) return null;
+    return parseInt(m[1] || 0, 10) * 3600 +
+           parseInt(m[2] || 0, 10) * 60 +
+           parseInt(m[3] || 0, 10);
   }
 
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
   function toTime(sec) {
-    var m = Math.floor(sec / 60);
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
     var s = sec % 60;
-    if (!m) return s + "s";
-    return m + "m" + (s < 10 ? "0" : "") + s + "s";
+    if (h) return h + "h" + pad2(m) + "m" + pad2(s) + "s";
+    if (m) return m + "m" + pad2(s) + "s";
+    return s + "s";
   }
 
   function signed(n) {
