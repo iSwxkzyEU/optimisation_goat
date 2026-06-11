@@ -554,14 +554,16 @@
       : "";
 
     openModal(
-      '<div class="modal-head"><h3>' + ic("timer") + ' Optimized impact times</h3>' +
+      '<div class="modal-head"><h3>' + ic("timer") + ' Synchronized impact times</h3>' +
         '<button class="x" data-close>✕</button></div>' +
-      '<div class="opt-summary">Spread : <b>' + res.spreadBefore + "s</b> → " +
-        '<b class="ok">' + res.spreadAfter + "s</b></div>" +
+      '<div class="opt-summary">' +
+        (res.impactTime ? 'All armies impact at <b class="ok">' + esc(res.impactTime) + "</b>" : "") +
+        (res.capTime ? " · final CAP at <b>" + esc(res.capTime) + "</b>" : "") +
+        " · spread <b>" + res.spreadBefore + "s → " + res.spreadAfter + "s</b></div>" +
       warn +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
         "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
-        "<th>Current</th><th>Offset</th><th>New time</th>" +
+        "<th>March</th><th>Send delay</th><th>Impact</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Close</button>' +
