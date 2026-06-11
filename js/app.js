@@ -812,6 +812,11 @@
     var existingImage = existing ? existing.targetImage : null;
     var imgFile = null; // nouveau fichier choisi (sera envoyé au stockage)
 
+    // Valeur du textarea telle que le navigateur la présente à l'ouverture :
+    // c'est LA référence pour savoir si l'utilisateur a modifié le bloc
+    // (comparer à existing.raw échoue à tort : \r\n et \n de tête normalisés)
+    var initialRaw = document.getElementById("raw").value;
+
     document.getElementById("img").onchange = function (e) {
       imgFile = e.target.files[0] || null;
     };
@@ -830,8 +835,8 @@
       var rawText = document.getElementById("raw").value;
       var parsed = NukeParser.parseNuke(rawText);
       // Bloc inchangé en édition → on garde les participants existants
-      // (lignes ajoutées à la main, offsets/temps optimisés…)
-      var keepParticipants = existing && rawText === (existing.raw || "");
+      // (lignes ajoutées/retirées à la main, offsets/temps optimisés…)
+      var keepParticipants = existing && rawText === initialRaw;
       var manualTarget = (document.getElementById("target-num").value || "").trim();
       var manualSide = document.getElementById("nuke-side").value;
       if (!parsed.target && !manualTarget && parsed.participants.length === 0) {
@@ -862,7 +867,7 @@
           spread: keepParticipants ? existing.spread : parsed.spread,
           participants: keepParticipants ? existing.participants : parsed.participants,
           firstLaunch: keepParticipants ? existing.firstLaunch : parsed.firstLaunch,
-          raw: parsed.raw,
+          raw: keepParticipants ? (existing.raw || "") : parsed.raw,
           targetImage: imageUrl || null,
         };
         return Store.saveNuke(nuke);
