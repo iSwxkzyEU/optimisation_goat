@@ -40,11 +40,11 @@
   function refreshIcons() { if (window.lucide) window.lucide.createIcons(); }
 
   // Devine le type de formation (50 / 90 / 110 / Barrack) depuis le texte
-  // d'une ligne de joueur ("90 form", "110 form", "Barrack", …). null sinon.
+  // d'une ligne de joueur ("90 form", "F110NOCAPS", "Barrack", …). null sinon.
   function formTypeOf(formation) {
     var s = String(formation || "").toLowerCase();
     if (/barrack/.test(s)) return "Barrack";
-    var m = s.match(/\b(110|90|50)\b/);
+    var m = s.match(/(110|90|50)/);
     return m ? m[1] : null;
   }
 
@@ -110,6 +110,7 @@
     });
     if (name === "home") renderHome();
     else if (name === "formations") renderFormations();
+    else if (name === "history") renderHistory();
     else if (name === "nuke") renderNukeDetail(param);
     updateCounts();
     refreshIcons();
@@ -331,10 +332,15 @@
           "<td>" + esc(p.qty) + "</td>" +
           "<td>" + esc(p.march) + "</td>" +
           "<td>" + esc(p.offset) + "</td>" +
+          "<td class='strong impact'>" + esc(p.impact || "") + "</td>" +
           "<td>" + formCell + "</td>" +
           "<td class='strong'>" + esc(p.launch) + "</td>" +
-          "<td class='row-action'><button class='row-del' data-del-row='" + idx +
-            "' title='Remove this player'>" + ic("x") + "</button></td>" +
+          "<td class='row-action'>" +
+            "<button class='row-edit' data-edit-row='" + idx +
+              "' title='Edit this player'>" + ic("pencil") + "</button>" +
+            "<button class='row-del' data-del-row='" + idx +
+              "' title='Remove this player'>" + ic("x") + "</button>" +
+          "</td>" +
         "</tr>"
       );
     }).join("");
@@ -377,8 +383,14 @@
             "</div>" +
           "</div>" +
           "<div class='detail-actions'>" +
+            '<button class="btn" id="optimize-nuke">' + ic("timer") + ' Optimize times</button>' +
             '<button class="btn" id="edit-nuke">' + ic("square-pen") + ' Edit</button>' +
             '<button class="btn danger" id="del-nuke">' + ic("trash-2") + ' Delete</button>' +
+          "</div>" +
+          "<div class='detail-result'>" +
+            '<span class="result-label">Nuke fired?</span>' +
+            '<button class="btn success" id="nuke-success">' + ic("check") + ' Success</button>' +
+            '<button class="btn fail" id="nuke-fail">' + ic("x") + ' Fail</button>' +
           "</div>" +
         "</div>" +
 
@@ -386,7 +398,7 @@
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
               "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th>" +
-              "<th>March</th><th>Off.</th><th>Formation</th><th>Launch</th><th></th>" +
+              "<th>March</th><th>Off.</th><th>Impact</th><th>Formation</th><th>Launch</th><th></th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
             '<button class="btn add-row" id="add-row">' + ic("plus") + " Add a row</button>" +
           "</div>" +
@@ -409,6 +421,14 @@
       }
     };
     document.getElementById("add-row").onclick = function () { openParticipantForm(n); };
+    document.getElementById("optimize-nuke").onclick = function () { openOptimizeModal(n); };
+    document.getElementById("nuke-success").onclick = function () { recordResult(n, "success"); };
+    document.getElementById("nuke-fail").onclick = function () { recordResult(n, "fail"); };
+    el.view.querySelectorAll("[data-edit-row]").forEach(function (b) {
+      b.onclick = function () {
+        openParticipantForm(n, parseInt(b.dataset.editRow, 10));
+      };
+    });
     el.view.querySelectorAll("[data-del-row]").forEach(function (b) {
       b.onclick = function () {
         var idx = parseInt(b.dataset.delRow, 10);
@@ -435,33 +455,40 @@
       .sort()[0] || "";
   }
 
-  /* ---------- Formulaire : ajouter une ligne de joueur ----------------- */
+  /* ---------- Formulaire : ajouter / éditer une ligne de joueur -------- */
 
-  function openParticipantForm(nuke) {
+  // editIdx absent → ajout d'une ligne ; présent → édition de la ligne idx
+  function openParticipantForm(nuke, editIdx) {
+    var editing = editIdx != null;
+    var p = editing ? nuke.participants[editIdx] : null;
+    if (editing && !p) return;
+
     var typeOpts = ["army", "cap"].map(function (t) {
-      return '<option value="' + t + '">' + t + "</option>";
+      var sel = p && p.type === t ? " selected" : "";
+      return '<option value="' + t + '"' + sel + ">" + t + "</option>";
     }).join("");
     var formOpts = Store.FORM_TYPES.map(function (t) {
       return '<option value="' + t + '">';
     }).join("");
+    function v(field) { return esc(p ? (p[field] || "") : ""); }
 
     openModal(
-      '<div class="modal-head"><h3>Add a player</h3>' +
+      '<div class="modal-head"><h3>' + (editing ? "Edit " + esc(p.name || "player") : "Add a player") + "</h3>" +
         '<button class="x" data-close>✕</button></div>' +
       '<div class="pform">' +
-        '<div class="pf"><label>Player *</label><input id="pf-name" placeholder="Nickname"></div>' +
-        '<div class="pf"><label>ID</label><input id="pf-id" placeholder="2571"></div>' +
+        '<div class="pf"><label>Player *</label><input id="pf-name" placeholder="Nickname" value="' + v("name") + '"></div>' +
+        '<div class="pf"><label>ID</label><input id="pf-id" placeholder="2571" value="' + v("id") + '"></div>' +
         '<div class="pf"><label>Type</label><select id="pf-type">' + typeOpts + "</select></div>" +
-        '<div class="pf"><label>Quantity</label><input id="pf-qty" placeholder="x4"></div>' +
-        '<div class="pf"><label>March</label><input id="pf-march" placeholder="16m32s"></div>' +
-        '<div class="pf"><label>Offset</label><input id="pf-offset" placeholder="+0s"></div>' +
-        '<div class="pf"><label>Formation</label><input id="pf-form" list="pf-forms" placeholder="90">' +
+        '<div class="pf"><label>Quantity</label><input id="pf-qty" placeholder="x4" value="' + v("qty") + '"></div>' +
+        '<div class="pf"><label>March</label><input id="pf-march" placeholder="16m32s" value="' + v("march") + '"></div>' +
+        '<div class="pf"><label>Offset</label><input id="pf-offset" placeholder="+0s" value="' + v("offset") + '"></div>' +
+        '<div class="pf"><label>Formation</label><input id="pf-form" list="pf-forms" placeholder="90" value="' + v("formation") + '">' +
           '<datalist id="pf-forms">' + formOpts + "</datalist></div>" +
-        '<div class="pf"><label>Launch (HH:MM)</label><input id="pf-launch" placeholder="16:36"></div>' +
+        '<div class="pf"><label>Launch (HH:MM)</label><input id="pf-launch" placeholder="16:36" value="' + v("launch") + '"></div>' +
       "</div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Cancel</button>' +
-        '<button class="btn primary" id="pf-save">Add</button>' +
+        '<button class="btn primary" id="pf-save">' + (editing ? "Save" : "Add") + "</button>" +
       "</div>"
     );
 
@@ -470,7 +497,7 @@
     document.getElementById("pf-save").onclick = function () {
       var name = val("pf-name");
       if (!name) { alert("The player's nickname is required."); return; }
-      nuke.participants.push({
+      var data = {
         id: val("pf-id"),
         name: name,
         type: val("pf-type").toLowerCase(),
@@ -479,21 +506,230 @@
         offset: val("pf-offset"),
         formation: val("pf-form"),
         launch: val("pf-launch"),
-        manual: true,
-      });
+      };
+      if (editing) {
+        // On garde les champs non exposés (impact optimisé, marque "manual")
+        Object.keys(data).forEach(function (k) { p[k] = data[k]; });
+      } else {
+        data.manual = true;
+        nuke.participants.push(data);
+      }
       nuke.firstLaunch = computeFirstLaunch(nuke.participants);
       var btn = document.getElementById("pf-save");
       btn.disabled = true;
-      btn.textContent = "Adding…";
+      btn.textContent = "Saving…";
       Store.saveNuke(nuke).then(function () {
         closeModal();
         renderNukeDetail(nuke.id);
       }).catch(function (e) {
         btn.disabled = false;
-        btn.textContent = "Add";
+        btn.textContent = editing ? "Save" : "Add";
         showErr(e);
       });
     };
+  }
+
+  /* ---------- Optimisation des temps d'impact --------------------------- */
+
+  function openOptimizeModal(n) {
+    var res = NukeOptimizer.optimize(n.participants);
+    if (!res.rows.length) {
+      alert("No readable march times (e.g. 6m11s) to optimize.");
+      return;
+    }
+
+    var rows = res.rows.map(function (r) {
+      var cls = r.offsetSec > 0 ? "off-plus" : (r.offsetSec < 0 ? "off-minus" : "");
+      return "<tr><td>" + esc(r.id) + "</td><td class='strong'>" + esc(r.name) + "</td>" +
+        "<td><span class='tag tag-" + esc(r.type) + "'>" + esc(r.type) + "</span></td>" +
+        "<td>" + esc(r.qty) + "</td><td>" + esc(r.current) + "</td>" +
+        "<td class='strong " + cls + "'>" + esc(r.offset) + "</td>" +
+        "<td class='strong impact'>" + esc(r.newTime) + "</td></tr>";
+    }).join("");
+
+    var warn = res.warnings.length
+      ? '<div class="opt-warnings">' + res.warnings.map(function (w) {
+          return "<div>" + ic("triangle-alert") + " " + esc(w) + "</div>";
+        }).join("") + "</div>"
+      : "";
+
+    openModal(
+      '<div class="modal-head"><h3>' + ic("timer") + ' Optimized impact times</h3>' +
+        '<button class="x" data-close>✕</button></div>' +
+      '<div class="opt-summary">Spread : <b>' + res.spreadBefore + "s</b> → " +
+        '<b class="ok">' + res.spreadAfter + "s</b></div>" +
+      warn +
+      '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
+        "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
+        "<th>Current</th><th>Offset</th><th>New time</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+      '<div class="modal-foot">' +
+        '<button class="btn ghost" data-close>Close</button>' +
+        '<button class="btn" id="opt-copy">' + ic("copy") + ' Copy for Discord</button>' +
+        '<button class="btn primary" id="opt-apply">Apply to nuke</button>' +
+      "</div>"
+    );
+
+    document.getElementById("opt-copy").onclick = function () {
+      var txt = optimizedAsciiTable(res.rows);
+      navigator.clipboard.writeText(txt).then(function () {
+        document.getElementById("opt-copy").innerHTML = ic("check") + " Copied!";
+        refreshIcons();
+      }).catch(function () {
+        window.prompt("Copy manually (Ctrl+C):", txt);
+      });
+    };
+
+    document.getElementById("opt-apply").onclick = function () {
+      res.rows.forEach(function (r) {
+        var p = n.participants[r.idx];
+        if (!p) return;
+        p.offset = r.offset;
+        p.impact = r.newTime;
+      });
+      n.spread = res.spreadAfter + " seconds";
+      var btn = document.getElementById("opt-apply");
+      btn.disabled = true;
+      btn.textContent = "Applying…";
+      Store.saveNuke(n).then(function () {
+        closeModal();
+        renderNukeDetail(n.id);
+      }).catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = "Apply to nuke";
+        showErr(e);
+      });
+    };
+  }
+
+  // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code
+  function optimizedAsciiTable(rows) {
+    var headers = ["ID", "Type", "Card", "Time", "Offset", "New time"];
+    var data = rows.map(function (r) {
+      return [
+        (r.id || "?") + "[" + (r.name || "?") + "]",
+        r.type || "", r.qty || "", r.current, r.offset, r.newTime,
+      ];
+    });
+    var widths = headers.map(function (h, i) {
+      return data.reduce(function (w, d) {
+        return Math.max(w, String(d[i]).length);
+      }, h.length);
+    });
+    function center(s, w) {
+      var pad = w - s.length;
+      var left = Math.floor(pad / 2);
+      return new Array(left + 1).join(" ") + s + new Array(pad - left + 1).join(" ");
+    }
+    function border() {
+      return "+" + widths.map(function (w) {
+        return new Array(w + 3).join("-");
+      }).join("+") + "+";
+    }
+    function row(cells) {
+      return "|" + cells.map(function (c, i) {
+        return " " + center(String(c), widths[i]) + " ";
+      }).join("|") + "|";
+    }
+    var out = [border(), row(headers), border()];
+    data.forEach(function (d) { out.push(row(d)); });
+    out.push(border());
+    return "```\n" + out.join("\n") + "\n```";
+  }
+
+  /* ---------- Résultat d'une nuke (Success / Fail) ---------------------- */
+
+  function recordResult(n, result) {
+    if (!Store.isHistoryAvailable()) {
+      alert("History is not set up yet.\n\nRun the updated supabase-setup.sql script " +
+        "in Supabase (SQL Editor), then reload the page.");
+      return;
+    }
+    var msg = result === "success"
+      ? "Mark this nuke as a SUCCESS?\n\nIt will be saved to History and removed from the list."
+      : "Mark this nuke as a FAIL?\n\nIt will be saved to History and the nuke stays in the list.";
+    if (!confirm(msg)) return;
+
+    Store.addHistoryEntry(n, result).then(function () {
+      if (result === "success") {
+        return Store.deleteNuke(n.id).then(function () { route("home"); });
+      }
+      renderNukeDetail(n.id);
+    }).catch(showErr);
+  }
+
+  /* ---------- Vue : Historique (taux de réussite) ----------------------- */
+
+  function renderHistory() {
+    if (!Store.isHistoryAvailable()) {
+      el.view.innerHTML =
+        '<div class="page-head"><h2>History</h2></div>' +
+        '<div class="empty">⚠ History table missing.<br><br>' +
+        "Run the updated <b>supabase-setup.sql</b> script in Supabase " +
+        "(SQL Editor), then reload the page.</div>";
+      return;
+    }
+
+    var list = Store.getHistory();
+    var total = list.length;
+    var wins = list.filter(function (h) { return h.result === "success"; }).length;
+    var fails = total - wins;
+    var rate = total ? Math.round((wins * 100) / total) : 0;
+
+    var statsHtml =
+      '<div class="stats-row">' +
+        '<div class="stat-card"><div class="stat-big rate">' + rate + "%</div>" +
+          '<div class="stat-label">Success rate</div></div>' +
+        '<div class="stat-card"><div class="stat-big ok">' + wins + "</div>" +
+          '<div class="stat-label">Success</div></div>' +
+        '<div class="stat-card"><div class="stat-big ko">' + fails + "</div>" +
+          '<div class="stat-label">Fail</div></div>' +
+        '<div class="stat-card"><div class="stat-big">' + total + "</div>" +
+          '<div class="stat-label">Nukes fired</div></div>' +
+      "</div>";
+
+    var rows = list.map(function (h) {
+      var d = h.firedAt ? new Date(h.firedAt) : null;
+      var when = d
+        ? d.toLocaleDateString() + " " +
+          d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "—";
+      return (
+        "<tr>" +
+          "<td>" + esc(when) + "</td>" +
+          "<td class='strong'>" + esc(h.target || "?") + "</td>" +
+          "<td>" + (h.targetPlayer ? esc(h.targetPlayer) : "<span class='muted'>—</span>") + "</td>" +
+          "<td><span class='side-" + esc((h.side || "").toLowerCase()) + " pill small-pill'>" +
+            esc(h.side || "—") + "</span></td>" +
+          "<td>" + (h.players || 0) + "</td>" +
+          "<td><span class='tag tag-" + h.result + "'>" + h.result + "</span></td>" +
+          "<td class='row-action'><button class='row-del' data-del-hist='" + h.id +
+            "' title='Delete this entry'>" + ic("x") + "</button></td>" +
+        "</tr>"
+      );
+    }).join("");
+
+    el.view.innerHTML =
+      '<div class="page-head"><h2>History</h2></div>' +
+      (total
+        ? statsHtml +
+          '<div class="detail-table-wrap">' +
+          '<table class="ptable"><thead><tr>' +
+            "<th>Date</th><th>Target</th><th>Player</th><th>Side</th>" +
+            "<th>Players</th><th>Result</th><th></th>" +
+          "</tr></thead><tbody>" + rows + "</tbody></table></div>"
+        : '<div class="empty">No nuke fired yet. On a nuke, use the ' +
+          "<b>Success</b> / <b>Fail</b> buttons after firing it.</div>");
+
+    el.view.querySelectorAll("[data-del-hist]").forEach(function (b) {
+      b.onclick = function () {
+        if (confirm("Delete this history entry?")) {
+          Store.deleteHistoryEntry(b.dataset.delHist)
+            .then(function () { renderHistory(); refreshIcons(); }).catch(showErr);
+        }
+      };
+    });
+    refreshIcons();
   }
 
   /* ---------- Formulaire création / édition d'une nuke ----------------- */
@@ -510,16 +746,31 @@
           ">" + esc(c.name) + "</option>";
       }).join("");
 
+    // Target + Side saisis à la main : indispensables avec le tableau du bot,
+    // qui ne contient ni TARGET ni SIDE (priorité sur le bloc collé).
+    var existingSide = existing ? (existing.side || "") : "";
+    var sideOpts = '<option value="">— From pasted block —</option>' +
+      SIDES.map(function (s) {
+        return '<option value="' + s + '"' + (s === existingSide ? " selected" : "") + ">" + s + "</option>";
+      }).join("");
+
     openModal(
       '<div class="modal-head"><h3>' + (existing ? "Edit" : "New") +
         ' nuke</h3><button class="x" data-close>✕</button></div>' +
+      '<div class="form-cols">' +
+        '<div><label class="lbl">Target (castle):</label>' +
+        '<input type="text" id="target-num" class="modal-input" placeholder="61667" value="' +
+          esc(existing ? (existing.target || "") : "") + '"></div>' +
+        '<div><label class="lbl">Side:</label>' +
+        '<select id="nuke-side" class="modal-input">' + sideOpts + "</select></div>" +
+      "</div>" +
       '<label class="lbl">Targeted player (enemy):</label>' +
       '<input type="text" id="target-player" class="modal-input" placeholder="Enemy player name" value="' +
         esc(existing ? (existing.targetPlayer || "") : "") + '">' +
       '<label class="lbl">Carousel (category):</label>' +
       '<select id="nuke-cat" class="modal-input">' + catOpts + "</select>" +
-      '<label class="lbl">Paste the Discord block here:</label>' +
-      '<textarea id="raw" class="raw" placeholder="TARGET : 61667&#10;SIDE : RIGHT&#10;SPREAD : 7 seconds&#10;&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form - &quot;Launch&quot; at 16:36">' +
+      '<label class="lbl">Paste the Discord block or the bot table here:</label>' +
+      '<textarea id="raw" class="raw" placeholder="Either:&#10;TARGET : 61667&#10;SIDE : RIGHT&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form&#10;&#10;Or the bot table:&#10;|   94011[fredite]   | army |  x5  | 6m11s |">' +
         esc(raw) + "</textarea>" +
       '<button class="btn" id="preview-btn">' + ic("eye") + ' Parse preview</button>' +
       '<div id="preview" class="preview-zone"></div>' +
@@ -544,8 +795,14 @@
     };
 
     document.getElementById("save-nuke").onclick = function () {
-      var parsed = NukeParser.parseNuke(document.getElementById("raw").value);
-      if (!parsed.target && parsed.participants.length === 0) {
+      var rawText = document.getElementById("raw").value;
+      var parsed = NukeParser.parseNuke(rawText);
+      // Bloc inchangé en édition → on garde les participants existants
+      // (lignes ajoutées à la main, offsets/temps optimisés…)
+      var keepParticipants = existing && rawText === (existing.raw || "");
+      var manualTarget = (document.getElementById("target-num").value || "").trim();
+      var manualSide = document.getElementById("nuke-side").value;
+      if (!parsed.target && !manualTarget && parsed.participants.length === 0) {
         alert("The block looks empty or malformed. Check the format.");
         return;
       }
@@ -566,13 +823,13 @@
       imgStep.then(function (imageUrl) {
         var nuke = {
           id: existing ? existing.id : null,
-          target: parsed.target,
+          target: manualTarget || parsed.target,
           targetPlayer: targetPlayer,
           categoryId: categoryId,
-          side: parsed.side,
-          spread: parsed.spread,
-          participants: parsed.participants,
-          firstLaunch: parsed.firstLaunch,
+          side: manualSide || parsed.side,
+          spread: keepParticipants ? existing.spread : parsed.spread,
+          participants: keepParticipants ? existing.participants : parsed.participants,
+          firstLaunch: keepParticipants ? existing.firstLaunch : parsed.firstLaunch,
           raw: parsed.raw,
           targetImage: imageUrl || null,
         };

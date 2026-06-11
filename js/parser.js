@@ -6,6 +6,12 @@
        SPREAD : 7 seconds
    Puis une ligne par participant :
        2571 [varju bence]  | army |  x4  | 16m32s | +4s - 90 form - "Launch" at 16:36
+   Accepte AUSSI le tableau ASCII du bot :
+       +----------------+------+------+-------+
+       |       ID       | Type | Card |  Time |
+       +----------------+------+------+-------+
+       | 94011[fredite] | army |  x5  | 6m11s |
+   (bordures et ligne d'en-tête ignorées, pipes externes retirés)
    Le parser est volontairement TOLÉRANT : espaces variables,
    formation en numéro ("90 form") ou en texte ("bacdoor titty slap"),
    tirets collés, etc.
@@ -26,6 +32,59 @@
   // Une ligne participant contient au moins un "|"
   function isParticipantLine(line) {
     return line.indexOf("|") !== -1;
+  }
+
+  // Retire les pipes externes du format tableau : "| a | b |" -> "a | b"
+  function stripOuterPipes(line) {
+    return line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").trim();
+  }
+
+  // Ligne d'en-tête du tableau ASCII : "| ID | Type | Card | Time |"
+  // (avec éventuellement Form, Mod… selon le bot)
+  function isTableHeader(line) {
+    var cells = line.split("|").map(function (c) { return c.trim().toLowerCase(); });
+    return cells[0] === "id" && cells.indexOf("type") !== -1;
+  }
+
+  // "94011[fredite]" ou "2571 [varju bence]" -> { id, name }
+  function parseIdName(idName) {
+    var bracket = idName.match(/^(\S+)?\s*\[(.+?)\]/);
+    if (bracket) {
+      return { id: (bracket[1] || "").trim(), name: bracket[2].trim() };
+    }
+    // Pas de crochets : premier token = id, le reste = nom
+    var tokens = idName.split(/\s+/);
+    return { id: tokens.shift() || "", name: tokens.join(" ") };
+  }
+
+  // Participant d'un tableau ASCII dont on connaît l'en-tête :
+  // chaque cellule est lue à la position de sa colonne (Form, Mod…).
+  function parseMappedParticipant(line, cols) {
+    var parts = line.split("|").map(function (p) { return p.trim(); });
+    function cell(names) {
+      for (var i = 0; i < names.length; i++) {
+        var at = cols.indexOf(names[i]);
+        if (at !== -1) return parts[at] || "";
+      }
+      return "";
+    }
+    var idName = parseIdName(cell(["id"]));
+
+    // Mod : "+8" / "-3" / "+4s" -> normalisé en "+8s"
+    var offset = "";
+    var om = cell(["mod", "offset", "off", "off."]).match(/^([+\-]?)\s*(\d+)/);
+    if (om) offset = (om[1] || "") + om[2] + "s";
+
+    return {
+      id: idName.id,
+      name: idName.name,
+      type: cell(["type"]).toLowerCase(),
+      qty: cell(["card", "qty"]).replace(/\s+/g, ""),
+      march: cell(["time", "march"]).replace(/\s+/g, ""),
+      offset: offset,
+      formation: cell(["form", "formation"]),
+      launch: cell(["launch"]),
+    };
   }
 
   // Parse le 5e segment : "+4s - 90 form - \"Launch\" at 16:36"
@@ -65,19 +124,9 @@
     var parts = line.split("|").map(function (p) { return p.trim(); });
 
     // parts[0] = "2571 [varju bence]"
-    var idName = parts[0] || "";
-    var id = "";
-    var name = "";
-    var bracket = idName.match(/^(\S+)?\s*\[(.+?)\]/);
-    if (bracket) {
-      id = (bracket[1] || "").trim();
-      name = bracket[2].trim();
-    } else {
-      // Pas de crochets : on prend le premier token comme id, le reste comme nom
-      var tokens = idName.split(/\s+/);
-      id = tokens.shift() || "";
-      name = tokens.join(" ");
-    }
+    var idName = parseIdName(parts[0] || "");
+    var id = idName.id;
+    var name = idName.name;
 
     var type = (parts[1] || "").toLowerCase();        // army / cap
     var qty = (parts[2] || "").replace(/\s+/g, "");    // x4
@@ -107,13 +156,29 @@
     var side = headerValue(text, "SIDE").toUpperCase();
     var spread = headerValue(text, "SPREAD");
 
-    var participants = text
+    var lines = text
       .split("\n")
       .map(function (l) { return l.trim(); })
       .filter(function (l) { return l && isParticipantLine(l); })
       // On exclut une éventuelle ligne d'en-tête contenant un "|"
       .filter(function (l) { return !/^(target|side|spread)\s*:/i.test(l); })
-      .map(parseParticipant)
+      .map(stripOuterPipes)
+      .filter(Boolean);
+
+    // Si le tableau a une ligne d'en-tête, elle donne l'ordre des colonnes
+    // (ID / Type / Card / Time / Form / Mod…) ; sinon format Discord classique.
+    var cols = null;
+    lines.forEach(function (l) {
+      if (!cols && isTableHeader(l)) {
+        cols = l.split("|").map(function (c) { return c.trim().toLowerCase(); });
+      }
+    });
+
+    var participants = lines
+      .filter(function (l) { return !isTableHeader(l); })
+      .map(function (l) {
+        return cols ? parseMappedParticipant(l, cols) : parseParticipant(l);
+      })
       .filter(function (p) { return p.name || p.id; });
 
     return {

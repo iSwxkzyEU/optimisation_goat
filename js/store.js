@@ -23,7 +23,8 @@
   var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   // Cache mémoire (rempli par init, relu par les getters synchrones)
-  var cache = { nukes: [], formations: emptyFormations(), categories: [] };
+  var cache = { nukes: [], formations: emptyFormations(), categories: [], history: [] };
+  var historyAvailable = true; // false si la table nuke_history n'existe pas encore
 
   function emptyFormations() {
     var f = {};
@@ -36,7 +37,34 @@
 
   /* --- Chargement initial ------------------------------------------- */
   function init() {
-    return Promise.all([loadNukes(), loadFormations(), loadCategories()]);
+    return Promise.all([loadNukes(), loadFormations(), loadCategories(), loadHistory()]);
+  }
+
+  // Tolérant : si la table n'existe pas encore (SQL pas relancé),
+  // le reste du site fonctionne et la page History explique quoi faire.
+  function loadHistory() {
+    return sb.from("nuke_history").select("*").order("fired_at", { ascending: false })
+      .then(function (res) {
+        if (res.error) throw res.error;
+        cache.history = (res.data || []).map(historyFromRow);
+        historyAvailable = true;
+      })
+      .catch(function () {
+        cache.history = [];
+        historyAvailable = false;
+      });
+  }
+
+  function historyFromRow(r) {
+    return {
+      id: r.id,
+      target: r.target || "",
+      targetPlayer: r.target_player || "",
+      side: r.side || "",
+      result: r.result,
+      players: r.players || 0,
+      firedAt: r.fired_at ? new Date(r.fired_at).getTime() : 0,
+    };
   }
 
   function loadCategories() {
@@ -169,6 +197,38 @@
     });
   }
 
+  /* --- Historique Success / Fail ------------------------------------ */
+  function getHistory() {
+    return cache.history.slice().sort(function (a, b) {
+      return (b.firedAt || 0) - (a.firedAt || 0);
+    });
+  }
+
+  function isHistoryAvailable() { return historyAvailable; }
+
+  // Enregistre le résultat d'une nuke tirée ("success" ou "fail")
+  function addHistoryEntry(nuke, result) {
+    var row = {
+      target: nuke.target || null,
+      target_player: nuke.targetPlayer || null,
+      side: nuke.side || null,
+      result: result,
+      players: (nuke.participants || []).length,
+    };
+    return sb.from("nuke_history").insert(row).select().single().then(function (res) {
+      if (res.error) throw res.error;
+      cache.history.unshift(historyFromRow(res.data));
+      return cache.history[0];
+    });
+  }
+
+  function deleteHistoryEntry(id) {
+    return sb.from("nuke_history").delete().eq("id", id).then(function (res) {
+      if (res.error) throw res.error;
+      cache.history = cache.history.filter(function (h) { return h.id !== id; });
+    });
+  }
+
   /* --- Formations (lecture synchrone depuis le cache) --------------- */
   function getFormations(side, type) {
     if (!side) return cache.formations;
@@ -224,6 +284,10 @@
     addCategory: addCategory,
     renameCategory: renameCategory,
     deleteCategory: deleteCategory,
+    getHistory: getHistory,
+    isHistoryAvailable: isHistoryAvailable,
+    addHistoryEntry: addHistoryEntry,
+    deleteHistoryEntry: deleteHistoryEntry,
     getFormations: getFormations,
     uploadFile: uploadFile,
     addFormationFile: addFormationFile,
