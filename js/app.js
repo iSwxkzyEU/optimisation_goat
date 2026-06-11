@@ -603,6 +603,17 @@
         p.offset = r.offset;
         p.impact = r.newTime;
       });
+      // Réordonne le tableau selon l'ordre de tir optimisé
+      // (les lignes non optimisées — temps illisible — restent en queue)
+      var used = {};
+      var ordered = res.rows.map(function (r) {
+        used[r.idx] = true;
+        return n.participants[r.idx];
+      }).filter(Boolean);
+      n.participants.forEach(function (p, i) {
+        if (!used[i]) ordered.push(p);
+      });
+      n.participants = ordered;
       n.spread = res.spreadAfter + " seconds";
       var btn = document.getElementById("opt-apply");
       btn.disabled = true;
