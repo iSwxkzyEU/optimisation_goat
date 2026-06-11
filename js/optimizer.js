@@ -1,20 +1,22 @@
 /* ============================================================
    OPTIMIZER — synchronise les temps d'impact d'une nuke.
    Principe : le décalage est un DÉLAI D'ENVOI (on ne peut que
-   retarder un départ, jamais l'avancer). Donc :
+   retarder un départ, jamais l'avancer), PLAFONNÉ À +8s. Donc :
      - l'armée la plus lente fixe l'heure d'impact commune T ;
-     - chaque armée part avec un délai (T - sa marche) pour que
-       TOUTES frappent à la même seconde ;
+     - chaque armée part avec un délai (T - sa marche, max +8s)
+       pour frapper à la même seconde ; une armée trop rapide
+       pour rejoindre T est signalée (elle frappe au plus tard) ;
      - le CAP frappe en dernier, ~2s après les armées (s'il est
-       plus lent que T+2s, il garde son temps de marche : il
-       arrive de toute façon après) ;
+       plus lent il garde sa marche, s'il ne peut pas atteindre
+       l'après-armées avec +8s il est signalé) ;
      - plusieurs CAPs : +1s entre eux, le plus lent ferme le tir.
    ============================================================ */
 
 (function () {
   "use strict";
 
-  var CAP_GAP = 2; // le CAP final frappe ~2s après les armées
+  var MAX_DELAY = 8; // délai d'envoi maximum en secondes
+  var CAP_GAP = 2;   // le CAP final frappe ~2s après les armées
 
   // "1h21m42s" / "30m:13s" / "30:13" / "45s" / "6m" -> secondes (null si illisible)
   function toSeconds(str) {
@@ -64,16 +66,33 @@
 
     var warnings = [];
 
-    // 1) Toutes les armées frappent à l'heure de la plus lente
+    // 1) Les armées rejoignent la plus lente, dans la limite de +8s d'envoi
     var T = armies.length ? armies[armies.length - 1].t : null;
-    armies.forEach(function (a) { a.nt = T; });
+    var tooFast = [];
+    armies.forEach(function (a) {
+      a.nt = Math.min(a.t + MAX_DELAY, T);
+      if (a.nt < T) tooFast.push(a);
+    });
+    tooFast.forEach(function (a) {
+      warnings.push(
+        (a.p.name || a.p.id) + " is too fast to sync (max +" + MAX_DELAY + "s delay): " +
+        "it lands at " + toTime(a.nt) + ", " + (T - a.nt) + "s before the main impact."
+      );
+    });
 
-    // 2) CAPs après les armées : T+2s, puis +1s entre eux.
+    // 2) CAPs après les armées : T+2s, puis +1s entre eux — délai max +8s.
     //    Un CAP plus lent que ça garde sa marche (délai 0) : il arrive après.
-    var prev = T == null ? null : T + CAP_GAP - 1;
-    caps.forEach(function (c) {
-      c.nt = prev == null ? c.t : Math.max(prev + 1, c.t);
-      prev = c.nt;
+    var prev = T;
+    caps.forEach(function (c, k) {
+      var want = prev == null ? c.t : prev + (k === 0 ? CAP_GAP : 1);
+      c.nt = Math.max(c.t, Math.min(c.t + MAX_DELAY, want));
+      if (T != null && c.nt <= T) {
+        warnings.push(
+          "CAP " + (c.p.name || c.p.id) + " cannot strike after the armies even with +" +
+          MAX_DELAY + "s delay: it lands at " + toTime(c.nt) + "."
+        );
+      }
+      prev = prev == null ? c.nt : Math.max(prev, c.nt);
     });
     if (!caps.length) {
       warnings.push("No CAP in this nuke: the last attack should be a CAP.");
