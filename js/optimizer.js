@@ -76,19 +76,19 @@
       prev = c.nt;
     });
     if (!caps.length) {
-      warnings.push("Aucun CAP dans la nuke : la dernière attaque devrait être un CAP.");
+      warnings.push("No CAP in this nuke: the last attack should be a CAP.");
     } else if (T != null) {
       var lastCap = caps[caps.length - 1];
       if (lastCap.nt - T > CAP_GAP + Math.max(0, caps.length - 1)) {
         warnings.push(
-          "Le CAP " + (lastCap.p.name || lastCap.p.id) + " a une marche plus lente : " +
-          "il frappera " + (lastCap.nt - T) + "s après les armées."
+          "CAP " + (lastCap.p.name || lastCap.p.id) + " has a slower march: " +
+          "it will strike " + (lastCap.nt - T) + "s after the armies."
         );
       }
     }
     if (skipped.length) {
       warnings.push(
-        "Temps illisible, joueur(s) non optimisé(s) : " +
+        "Unreadable march time, player(s) left out: " +
         skipped.map(function (r) { return r.p.name || r.p.id; }).join(", ") + "."
       );
     }

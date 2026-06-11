@@ -12,7 +12,7 @@
       lambda d'entrer, mais quelqu'un de technique peut le contourner.
       Pour ton usage de guilde c'est suffisant ; la vraie barrière
       viendra avec la version en ligne.)                                   */
-  var PASSWORD = "guerre2026";
+  var PASSWORD = "family";
 
   var SIDES = ["RIGHT", "LEFT", "FRONT", "BACK"];
 

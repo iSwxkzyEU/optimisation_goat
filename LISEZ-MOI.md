@@ -5,7 +5,7 @@ les joueurs (via Supabase), hébergé sur **Vercel**.
 
 ## Accès
 - Site en ligne : **https://optimisation-goat.vercel.app**
-- Mot de passe d'entrée : **`guerre2026`**
+- Mot de passe d'entrée : **`family`**
   (modifiable dans `js/app.js`, ligne `var PASSWORD = ...`).
 
 ## Ce que ça fait
