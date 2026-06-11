@@ -308,9 +308,11 @@
     if (!n) { route("home"); return; }
 
     var rows = n.participants.map(function (p, idx) {
+      // Côté du joueur : le sien s'il a été personnalisé, sinon celui de la nuke
+      var pSide = p.side || n.side;
       // Cellule formation : lien direct vers le fichier .cas (côté + type)
       var ft = formTypeOf(p.formation);
-      var files = ft ? Store.getFormations(n.side, ft) : [];
+      var files = ft ? Store.getFormations(pSide, ft) : [];
       var formCell;
       if (files.length) {
         formCell = '<a class="form-link" href="' + files[0].dataUrl + '" download="' +
@@ -318,9 +320,12 @@
           ic("download") + " " + esc(p.formation) + "</a>";
       } else {
         formCell = esc(p.formation) +
-          (ft ? ' <span class="form-missing" title="No ' + esc(n.side) + "/" +
+          (ft ? ' <span class="form-missing" title="No ' + esc(pSide) + "/" +
             esc(ft) + ' file loaded">⚠</span>' : "");
       }
+      var sideCell = p.side
+        ? "<span class='pill small-pill side-" + esc(p.side.toLowerCase()) + "'>" + esc(p.side) + "</span>"
+        : "<span class='muted small'>" + esc(n.side || "—") + "</span>";
       var manualMark = p.manual
         ? ' <span class="manual-dot" title="Added manually">' + ic("user-plus") + "</span>"
         : "";
@@ -333,6 +338,7 @@
           "<td>" + esc(p.march) + "</td>" +
           "<td>" + esc(p.offset) + "</td>" +
           "<td class='strong impact'>" + esc(p.impact || "") + "</td>" +
+          "<td>" + sideCell + "</td>" +
           "<td>" + formCell + "</td>" +
           "<td class='strong'>" + esc(p.launch) + "</td>" +
           "<td class='row-action'>" +
@@ -398,7 +404,7 @@
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
               "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th>" +
-              "<th>March</th><th>Off.</th><th>Impact</th><th>Formation</th><th>Launch</th><th></th>" +
+              "<th>March</th><th>Off.</th><th>Impact</th><th>Side</th><th>Formation</th><th>Launch</th><th></th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
             '<button class="btn add-row" id="add-row">' + ic("plus") + " Add a row</button>" +
           "</div>" +
@@ -470,6 +476,12 @@
     var formOpts = Store.FORM_TYPES.map(function (t) {
       return '<option value="' + t + '">';
     }).join("");
+    // Côté personnel : vide = celui de la nuke
+    var sideOpts = '<option value="">Nuke side (' + esc(nuke.side || "—") + ")</option>" +
+      SIDES.map(function (s) {
+        var sel = p && p.side === s ? " selected" : "";
+        return '<option value="' + s + '"' + sel + ">" + s + "</option>";
+      }).join("");
     function v(field) { return esc(p ? (p[field] || "") : ""); }
 
     openModal(
@@ -482,6 +494,7 @@
         '<div class="pf"><label>Quantity</label><input id="pf-qty" placeholder="x4" value="' + v("qty") + '"></div>' +
         '<div class="pf"><label>March</label><input id="pf-march" placeholder="16m32s" value="' + v("march") + '"></div>' +
         '<div class="pf"><label>Offset</label><input id="pf-offset" placeholder="+0s" value="' + v("offset") + '"></div>' +
+        '<div class="pf"><label>Side</label><select id="pf-side">' + sideOpts + "</select></div>" +
         '<div class="pf"><label>Formation</label><input id="pf-form" list="pf-forms" placeholder="90" value="' + v("formation") + '">' +
           '<datalist id="pf-forms">' + formOpts + "</datalist></div>" +
         '<div class="pf"><label>Launch (HH:MM)</label><input id="pf-launch" placeholder="16:36" value="' + v("launch") + '"></div>' +
@@ -504,6 +517,7 @@
         qty: val("pf-qty"),
         march: val("pf-march"),
         offset: val("pf-offset"),
+        side: val("pf-side"), // vide = côté de la nuke
         formation: val("pf-form"),
         launch: val("pf-launch"),
       };
@@ -791,10 +805,15 @@
       imgFile = e.target.files[0] || null;
     };
 
-    document.getElementById("preview-btn").onclick = function () {
-      var parsed = NukeParser.parseNuke(document.getElementById("raw").value);
-      renderPreview(parsed);
-    };
+    function refreshPreview() {
+      if (!document.getElementById("preview").innerHTML &&
+          !document.getElementById("raw").value.trim()) return;
+      renderPreview(NukeParser.parseNuke(document.getElementById("raw").value));
+    }
+    document.getElementById("preview-btn").onclick = refreshPreview;
+    // L'aperçu reflète aussi les champs manuels (Target / Side)
+    document.getElementById("nuke-side").onchange = refreshPreview;
+    document.getElementById("target-num").oninput = refreshPreview;
 
     document.getElementById("save-nuke").onclick = function () {
       var rawText = document.getElementById("raw").value;
@@ -852,7 +871,12 @@
 
   function renderPreview(parsed) {
     var z = document.getElementById("preview");
-    if (!parsed.target && parsed.participants.length === 0) {
+    // Les champs manuels du formulaire priment sur le bloc collé
+    var manualTarget = (document.getElementById("target-num") || {}).value || "";
+    var manualSide = (document.getElementById("nuke-side") || {}).value || "";
+    var shownTarget = manualTarget.trim() || parsed.target;
+    var shownSide = manualSide || parsed.side;
+    if (!shownTarget && parsed.participants.length === 0) {
       z.innerHTML = '<span class="muted">Nothing detected yet.</span>';
       return;
     }
@@ -863,10 +887,11 @@
         "</td><td>" + esc(p.launch) + "</td></tr>";
     }).join("");
     z.innerHTML =
-      '<div class="preview-head">' + ic("circle-check") + ' Detected: <b>TARGET ' + esc(parsed.target || "?") + "</b>" +
+      '<div class="preview-head">' + ic("circle-check") + ' Detected: <b>TARGET ' + esc(shownTarget || "?") + "</b>" +
       (parsed.targetPlayer ? " · PLAYER <b>" + esc(parsed.targetPlayer) + "</b>" : "") +
-      " · SIDE <b>" + esc(parsed.side || "?") + "</b> · SPREAD " +
-      esc(parsed.spread || "?") + " · " + parsed.participants.length + " players</div>" +
+      " · SIDE <b>" + esc(shownSide || "?") + "</b>" +
+      (parsed.spread ? " · SPREAD " + esc(parsed.spread) : "") +
+      " · " + parsed.participants.length + " players</div>" +
       '<table class="ptable small"><thead><tr><th>ID</th><th>Player</th><th>Type</th>' +
       "<th>Qty</th><th>March</th><th>Off.</th><th>Form.</th><th>Launch</th></tr></thead>" +
       "<tbody>" + rows + "</tbody></table>";

@@ -16,10 +16,18 @@
 
   var CAP_GAP = 2; // le CAP final frappe ~2s après les armées
 
-  // "1h21m42s" / "6m11s" / "45s" / "6m" -> secondes (null si illisible)
+  // "1h21m42s" / "30m:13s" / "30:13" / "45s" / "6m" -> secondes (null si illisible)
   function toSeconds(str) {
     var s = String(str || "").trim().toLowerCase();
-    var m = s.match(/^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s?)?$/);
+    // Format purement numérique : "30:13" (mm:ss) ou "1:21:42" (h:mm:ss)
+    var c = s.match(/^(\d+):(\d+)(?::(\d+))?$/);
+    if (c) {
+      return c[3] == null
+        ? parseInt(c[1], 10) * 60 + parseInt(c[2], 10)
+        : parseInt(c[1], 10) * 3600 + parseInt(c[2], 10) * 60 + parseInt(c[3], 10);
+    }
+    // Avec unités, séparateurs ":" tolérés : "1h21m42s", "30m:13s", "6m", "45s"
+    var m = s.match(/^(?:(\d+)\s*h\s*:?\s*)?(?:(\d+)\s*m\s*:?\s*)?(?:(\d+)\s*s?)?$/);
     if (!m || (m[1] == null && m[2] == null && m[3] == null)) return null;
     return parseInt(m[1] || 0, 10) * 3600 +
            parseInt(m[2] || 0, 10) * 60 +
