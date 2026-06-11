@@ -127,15 +127,18 @@
         type: r.p.type,
         qty: r.p.qty,
         current: toTime(r.t),
+        marchSec: r.t,
         offsetSec: r.nt - r.t,
         offset: signed(r.nt - r.t),
         newTime: toTime(r.nt),
+        impactSec: r.nt,
       };
     });
 
     return {
       rows: result,
       impactTime: T == null ? null : toTime(T),
+      impactSec: T,
       capTime: caps.length ? toTime(caps[caps.length - 1].nt) : null,
       spreadBefore: spreadOf(times),
       spreadAfter: spreadOf(newTimes),
