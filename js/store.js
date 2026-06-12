@@ -63,6 +63,8 @@
       side: r.side || "",
       result: r.result,
       players: r.players || 0,
+      armies: r.armies == null ? null : r.armies,
+      details: r.details || null,
       firedAt: r.fired_at ? new Date(r.fired_at).getTime() : 0,
     };
   }
@@ -103,6 +105,7 @@
       target: r.target,
       targetPlayer: r.target_player || "",
       categoryId: r.category_id || null,
+      priority: !!r.priority,
       side: r.side,
       spread: r.spread,
       participants: r.participants || [],
@@ -118,6 +121,7 @@
       target: nuke.target || null,
       target_player: nuke.targetPlayer || null,
       category_id: nuke.categoryId || null,
+      priority: !!nuke.priority,
       side: nuke.side || null,
       spread: nuke.spread || null,
       participants: nuke.participants || [],
@@ -206,14 +210,33 @@
 
   function isHistoryAvailable() { return historyAvailable; }
 
-  // Enregistre le résultat d'une nuke tirée ("success" ou "fail")
-  function addHistoryEntry(nuke, result) {
+  // Photo de l'attaque conservée dans l'historique (pour le détail consultable)
+  function historyDetails(nuke) {
+    return {
+      spread: nuke.spread || "",
+      firstLaunch: nuke.firstLaunch || "",
+      targetImage: nuke.targetImage || null,
+      participants: (nuke.participants || []).map(function (p) {
+        return {
+          id: p.id || "", name: p.name || "", type: p.type || "", qty: p.qty || "",
+          march: p.march || "", offset: p.offset || "", impact: p.impact || "",
+          side: p.side || "", formation: p.formation || "",
+        };
+      }),
+    };
+  }
+
+  // Enregistre le résultat d'une nuke tirée ("success" ou "fail").
+  // armies = nombre d'armées utilisées pour réussir (null si non pertinent / fail).
+  function addHistoryEntry(nuke, result, armies) {
     var row = {
       target: nuke.target || null,
       target_player: nuke.targetPlayer || null,
       side: nuke.side || null,
       result: result,
       players: (nuke.participants || []).length,
+      armies: armies == null ? null : armies,
+      details: historyDetails(nuke),
     };
     return sb.from("nuke_history").insert(row).select().single().then(function (res) {
       if (res.error) throw res.error;

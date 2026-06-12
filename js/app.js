@@ -101,32 +101,85 @@
   /* ---------- Routing -------------------------------------------------- */
 
   var current = "home";
+  var currentParam = null;
   var homeFilter = ""; // filtre "joueur visé" sur la liste des nukes (persistant)
 
   function route(name, param) {
     current = name;
-    document.querySelectorAll(".nav-btn").forEach(function (b) {
-      b.classList.toggle("active", b.dataset.route === name);
-    });
+    currentParam = param != null ? param : null;
     if (name === "home") renderHome();
+    else if (name === "category") renderCategory(param);
+    else if (name === "unsorted") renderUnsorted();
     else if (name === "formations") renderFormations();
     else if (name === "history") renderHistory();
     else if (name === "nuke") renderNukeDetail(param);
-    updateCounts();
+    // État actif des entrées fixes (les encarts sont gérés par renderSidebar)
+    document.querySelectorAll(".sidebar-nav .nav-btn[data-route]").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.route !== "category" && b.dataset.route === name);
+    });
+    renderSidebar();
     refreshIcons();
   }
 
-  function updateCounts() {
-    var c = document.getElementById("nav-count-nukes");
-    if (c) c.textContent = Store.getNukes().length;
+  // Re-rend la vue courante (après un changement de données : priorité, etc.)
+  function rerender() { route(current, currentParam); }
+
+  // Liste des encarts dans le menu + compteurs (priorité + par encart)
+  function renderSidebar() {
+    var box = document.getElementById("sidebar-cats");
+    if (!box) return;
+    var nukes = Store.getNukes();
+    var cats = Store.getCategories();
+    var homeCount = document.getElementById("nav-count-home");
+    if (homeCount) {
+      homeCount.textContent = nukes.filter(function (n) { return n.priority; }).length;
+    }
+    var html = cats.map(function (c) {
+      var count = nukes.filter(function (n) { return n.categoryId === c.id; }).length;
+      var active = current === "category" && currentParam === c.id ? " active" : "";
+      return '<button class="nav-btn cat-nav' + active + '" data-route="category" data-cat="' + c.id + '">' +
+        ic("folder") + "<span>" + esc(c.name) + "</span>" +
+        '<span class="nav-count">' + count + "</span></button>";
+    }).join("");
+
+    // Filet de sécurité : nukes non rangées (aucun encart) → entrée "Unsorted"
+    var unsorted = nukes.filter(function (n) { return isUncategorized(n, cats); }).length;
+    if (unsorted) {
+      var ua = current === "unsorted" ? " active" : "";
+      html += '<button class="nav-btn cat-nav' + ua + '" data-route="unsorted">' +
+        ic("inbox") + "<span>Unsorted</span>" +
+        '<span class="nav-count">' + unsorted + "</span></button>";
+    }
+
+    box.innerHTML = html;
+    box.querySelectorAll("[data-cat]").forEach(function (b) {
+      b.onclick = function () {
+        route("category", b.dataset.cat);
+        el.app.classList.remove("nav-open"); // referme le menu sur mobile
+      };
+    });
+    var ub = box.querySelector('[data-route="unsorted"]');
+    if (ub) ub.onclick = function () {
+      route("unsorted");
+      el.app.classList.remove("nav-open");
+    };
+    refreshIcons();
+  }
+
+  // Une nuke est "non rangée" si elle n'a pas d'encart (ou un encart supprimé)
+  function isUncategorized(n, cats) {
+    return !n.categoryId || !cats.some(function (c) { return c.id === n.categoryId; });
   }
 
   /* ---------- Vue : Accueil (cards) ------------------------------------ */
 
   function cardHtml(n) {
     var sideClass = "side-" + (n.side || "").toLowerCase();
+    var starOn = n.priority ? " on" : "";
     return (
       '<div class="card" data-nuke="' + n.id + '">' +
+        '<button class="card-star' + starOn + '" data-star="' + n.id + '" title="' +
+          (n.priority ? "Unpin from priority" : "Pin to priority") + '">' + ic("star") + "</button>" +
         '<div class="card-top">' +
           '<span class="card-label">TARGET</span>' +
           '<span class="card-target">' + esc(n.target || "?") + "</span>" +
@@ -143,38 +196,78 @@
     );
   }
 
+  // Accueil = cibles prioritaires (épinglées ⭐, tous encarts confondus)
   function renderHome() {
-    var nukes = Store.getNukes();
-    var categories = Store.getCategories();
-    var hasContent = nukes.length || categories.length;
+    renderNukeList({
+      title: "Priority targets",
+      icon: "star",
+      nukes: Store.getNukes().filter(function (n) { return n.priority; }),
+      emptyHtml: 'No priority targets yet. Open a nuke and tap the ' + ic("star") +
+        " star to pin it here — or add one below.",
+      defaults: { priority: true, categoryId: null },
+    });
+  }
+
+  // Vue d'un encart : uniquement les nukes rangées dans cette localisation
+  function renderCategory(id) {
+    var cat = Store.getCategories().find(function (c) { return c.id === id; });
+    if (!cat) { route("home"); return; }
+    renderNukeList({
+      title: cat.name,
+      icon: "folder",
+      category: cat,
+      nukes: Store.getNukes().filter(function (n) { return n.categoryId === id; }),
+      emptyHtml: 'No nukes in “' + esc(cat.name) + '” yet. Click ' +
+        "<b>“+ Add a Nuke”</b> to add one to this carousel.",
+      defaults: { priority: false, categoryId: id },
+    });
+  }
+
+  // Vue des nukes non rangées (aucun encart) — accessible via le menu
+  function renderUnsorted() {
+    var cats = Store.getCategories();
+    renderNukeList({
+      title: "Unsorted",
+      icon: "inbox",
+      nukes: Store.getNukes().filter(function (n) { return isUncategorized(n, cats); }),
+      emptyHtml: "Nothing here — every nuke is filed into a carousel.",
+      defaults: { priority: false, categoryId: null },
+    });
+  }
+
+  // Rend une page-liste de nukes (accueil ou encart) : titre, actions, filtre, grille
+  function renderNukeList(opts) {
+    var nukes = opts.nukes;
+    var catActions = opts.category
+      ? '<button class="btn" id="rename-cat">' + ic("pencil") + " Rename</button>" +
+        '<button class="btn danger" id="del-cat">' + ic("trash-2") + " Delete</button>"
+      : "";
 
     el.view.innerHTML =
       '<div class="page-head">' +
-        "<h2>Nukes</h2>" +
+        "<h2>" + ic(opts.icon) + " " + esc(opts.title) + "</h2>" +
         '<div class="page-head-actions">' +
-          '<button class="btn" id="add-cat">' + ic("folder-plus") + " New carousel</button>" +
+          catActions +
           '<button class="btn primary" id="add-nuke">' + ic("plus") + " Add a Nuke</button>" +
         "</div>" +
       "</div>" +
-      (hasContent
-        ? (nukes.length
-            ? '<div class="filter-bar">' + ic("search") +
-                '<input id="filter-player" class="filter-input" type="text" ' +
-                  'placeholder="Filter by targeted player…" value="' + esc(homeFilter) + '">' +
-                '<button class="filter-clear" id="filter-clear" title="Clear filter">' + ic("x") + "</button>" +
-              "</div>"
-            : "") +
-          '<div id="carousels-box"></div>'
-        : '<div class="empty">No nukes yet. Click ' +
-          '<b>“+ Add a Nuke”</b> and paste your Discord block, ' +
-          'or <b>“+ New carousel”</b> to create a category first.</div>');
+      (nukes.length
+        ? '<div class="filter-bar">' + ic("search") +
+            '<input id="filter-player" class="filter-input" type="text" ' +
+              'placeholder="Filter by targeted player…" value="' + esc(homeFilter) + '">' +
+            '<button class="filter-clear" id="filter-clear" title="Clear filter">' + ic("x") + "</button>" +
+          "</div>" +
+          '<div class="cards" id="cards-box"></div>'
+        : '<div class="empty">' + opts.emptyHtml + "</div>");
 
-    document.getElementById("add-nuke").onclick = function () { openNukeForm(null); };
-    document.getElementById("add-cat").onclick = createCategoryFlow;
+    document.getElementById("add-nuke").onclick = function () { openNukeForm(null, opts.defaults); };
+    if (opts.category) {
+      document.getElementById("rename-cat").onclick = function () { renameCategoryFlow(opts.category.id); };
+      document.getElementById("del-cat").onclick = function () { deleteCategoryFlow(opts.category.id); };
+    }
+    if (!nukes.length) return;
 
-    if (!hasContent) return;
-
-    var box = document.getElementById("carousels-box");
+    var box = document.getElementById("cards-box");
     var input = document.getElementById("filter-player");
 
     function paint() {
@@ -182,73 +275,45 @@
       var visible = q
         ? nukes.filter(function (n) { return (n.targetPlayer || "").toLowerCase().indexOf(q) !== -1; })
         : nukes;
-
-      // Regroupe les nukes par catégorie
-      var byCat = {};
-      var uncategorized = [];
-      visible.forEach(function (n) {
-        if (n.categoryId && categories.some(function (c) { return c.id === n.categoryId; })) {
-          (byCat[n.categoryId] = byCat[n.categoryId] || []).push(n);
-        } else {
-          uncategorized.push(n);
-        }
-      });
-
-      var html = "";
-      if (uncategorized.length) html += carouselHtml(null, "Uncategorized", uncategorized);
-      categories.forEach(function (c) {
-        var list = byCat[c.id] || [];
-        if (q && !list.length) return; // pendant un filtre, on masque les rangées vides
-        html += carouselHtml(c, c.name, list);
-      });
-      if (!html) html = '<div class="empty">No nuke targets “' + esc(homeFilter) + "”.</div>";
-
-      box.innerHTML = html;
-      box.querySelectorAll(".card").forEach(function (c) {
-        c.onclick = function () { route("nuke", c.dataset.nuke); };
-      });
-      box.querySelectorAll("[data-rename-cat]").forEach(function (b) {
-        b.onclick = function () { renameCategoryFlow(b.dataset.renameCat); };
-      });
-      box.querySelectorAll("[data-del-cat]").forEach(function (b) {
-        b.onclick = function () { deleteCategoryFlow(b.dataset.delCat); };
-      });
+      box.innerHTML = visible.length
+        ? visible.map(cardHtml).join("")
+        : '<div class="empty">No nuke targets “' + esc(homeFilter) + "”.</div>";
+      wireCards(box);
       refreshIcons();
     }
 
-    if (input) {
-      input.oninput = function () { homeFilter = input.value; paint(); };
-      document.getElementById("filter-clear").onclick = function () {
-        homeFilter = "";
-        input.value = "";
-        paint();
-        input.focus();
-      };
-    }
+    input.oninput = function () { homeFilter = input.value; paint(); };
+    document.getElementById("filter-clear").onclick = function () {
+      homeFilter = "";
+      input.value = "";
+      paint();
+      input.focus();
+    };
     paint();
   }
 
-  // Une rangée "carousel" : titre + tuiles qui défilent horizontalement
-  function carouselHtml(category, title, list) {
-    var actions = category
-      ? '<div class="carousel-actions">' +
-          '<button class="icon-btn-sm" data-rename-cat="' + category.id + '" title="Rename carousel">' + ic("pencil") + "</button>" +
-          '<button class="icon-btn-sm" data-del-cat="' + category.id + '" title="Delete carousel">' + ic("trash-2") + "</button>" +
-        "</div>"
-      : "";
-    var tiles = list.length
-      ? list.map(cardHtml).join("")
-      : '<div class="carousel-empty">Empty — pick this carousel on a nuke from its form.</div>';
-    return (
-      '<section class="carousel">' +
-        '<div class="carousel-head">' +
-          '<h3 class="carousel-title">' + esc(title) +
-            ' <span class="carousel-count">' + list.length + "</span></h3>" +
-          actions +
-        "</div>" +
-        '<div class="carousel-track">' + tiles + "</div>" +
-      "</section>"
-    );
+  // Câble les cards d'une grille : clic = ouvrir, clic sur l'étoile = épingler
+  function wireCards(box) {
+    box.querySelectorAll(".card").forEach(function (c) {
+      c.onclick = function (e) {
+        if (e.target.closest("[data-star]")) return;
+        route("nuke", c.dataset.nuke);
+      };
+    });
+    box.querySelectorAll("[data-star]").forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();
+        togglePriority(b.dataset.star);
+      };
+    });
+  }
+
+  // Bascule l'étoile "prioritaire" d'une nuke puis rafraîchit la vue
+  function togglePriority(id) {
+    var n = Store.getNuke(id);
+    if (!n) return;
+    n.priority = !n.priority;
+    Store.saveNuke(n).then(rerender).catch(showErr);
   }
 
   /* ---------- Catégories (carousels) : créer / renommer / supprimer --- */
@@ -281,7 +346,10 @@
   function createCategoryFlow() {
     openTextPrompt("New carousel", "Carousel name (location)", "", "Create", "e.g. North bridge",
       function (name, onErr) {
-        Store.addCategory(name).then(function () { closeModal(); renderHome(); }).catch(onErr);
+        Store.addCategory(name).then(function (cat) {
+          closeModal();
+          route("category", cat.id); // on ouvre directement le nouvel encart
+        }).catch(onErr);
       });
   }
 
@@ -289,15 +357,18 @@
     var cat = Store.getCategories().find(function (c) { return c.id === id; });
     openTextPrompt("Rename carousel", "Carousel name", cat ? cat.name : "", "Rename", "",
       function (name, onErr) {
-        Store.renameCategory(id, name).then(function () { closeModal(); renderHome(); }).catch(onErr);
+        Store.renameCategory(id, name).then(function () {
+          closeModal();
+          route("category", id);
+        }).catch(onErr);
       });
   }
 
   function deleteCategoryFlow(id) {
     var cat = Store.getCategories().find(function (c) { return c.id === id; });
     var nm = cat ? cat.name : "";
-    if (confirm("Delete carousel “" + nm + "”?\n\nIts nukes are NOT deleted — they move back to Uncategorized.")) {
-      Store.deleteCategory(id).then(function () { renderHome(); }).catch(showErr);
+    if (confirm("Delete carousel “" + nm + "”?\n\nIts nukes are NOT deleted — they stay in the app (and on the home page if marked priority).")) {
+      Store.deleteCategory(id).then(function () { route("home"); }).catch(showErr);
     }
   }
 
@@ -388,6 +459,8 @@
             "</div>" +
           "</div>" +
           "<div class='detail-actions'>" +
+            '<button class="btn' + (n.priority ? " star-on" : "") + '" id="toggle-prio">' +
+              ic("star") + (n.priority ? " Priority" : " Make priority") + "</button>" +
             '<button class="btn" id="optimize-nuke">' + ic("timer") + ' Optimize times</button>' +
             '<button class="btn" id="edit-nuke">' + ic("square-pen") + ' Edit</button>' +
             '<button class="btn danger" id="del-nuke">' + ic("trash-2") + ' Delete</button>' +
@@ -426,6 +499,10 @@
       }
     };
     document.getElementById("add-row").onclick = function () { openParticipantForm(n); };
+    document.getElementById("toggle-prio").onclick = function () {
+      n.priority = !n.priority;
+      Store.saveNuke(n).then(function () { renderNukeDetail(n.id); renderSidebar(); }).catch(showErr);
+    };
     document.getElementById("optimize-nuke").onclick = function () { openOptimizeModal(n); };
     document.getElementById("nuke-success").onclick = function () { recordResult(n, "success"); };
     document.getElementById("nuke-fail").onclick = function () { recordResult(n, "fail"); };
@@ -669,17 +746,57 @@
         "in Supabase (SQL Editor), then reload the page.");
       return;
     }
-    var msg = result === "success"
-      ? "Mark this nuke as a SUCCESS?\n\nIt will be saved to History and removed from the list."
-      : "Mark this nuke as a FAIL?\n\nIt will be saved to History and the nuke stays in the list.";
-    if (!confirm(msg)) return;
+    // Un Fail reste dans la liste : simple confirmation.
+    if (result === "fail") {
+      if (!confirm("Mark this nuke as a FAIL?\n\nIt will be saved to History and the nuke stays in the list.")) return;
+      Store.addHistoryEntry(n, "fail", null)
+        .then(function () { renderNukeDetail(n.id); }).catch(showErr);
+      return;
+    }
+    // Un Success demande le nombre d'armées utilisées (suivi dans l'historique).
+    openSuccessModal(n);
+  }
 
-    Store.addHistoryEntry(n, result).then(function () {
-      if (result === "success") {
-        return Store.deleteNuke(n.id).then(function () { route("home"); });
-      }
-      renderNukeDetail(n.id);
-    }).catch(showErr);
+  // Modale Success : combien d'armées a-t-il fallu pour réussir ?
+  function openSuccessModal(n) {
+    var def = n.participants.length;
+    openModal(
+      '<div class="modal-head"><h3>' + ic("check") + " Nuke success</h3>" +
+        '<button class="x" data-close>✕</button></div>' +
+      '<p class="muted succ-intro">Target <b>' + esc(n.target || "?") + "</b>" +
+        (n.targetPlayer ? " · <b>" + esc(n.targetPlayer) + "</b>" : "") +
+        ". How many armies did it take to win?</p>" +
+      '<label class="lbl">Armies used</label>' +
+      '<input type="number" min="0" id="succ-armies" class="modal-input" value="' + def + '">' +
+      '<div class="modal-foot">' +
+        '<button class="btn ghost" data-close>Cancel</button>' +
+        '<button class="btn success" id="succ-ok">' + ic("check") + " Save success</button>" +
+      "</div>"
+    );
+    var inp = document.getElementById("succ-armies");
+    inp.focus();
+    inp.select();
+
+    function submit() {
+      var armies = parseInt(inp.value, 10);
+      if (isNaN(armies) || armies < 0) armies = def;
+      var btn = document.getElementById("succ-ok");
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      Store.addHistoryEntry(n, "success", armies).then(function () {
+        return Store.deleteNuke(n.id);
+      }).then(function () {
+        closeModal();
+        route("home");
+      }).catch(function (e) {
+        btn.disabled = false;
+        btn.innerHTML = ic("check") + " Save success";
+        refreshIcons();
+        showErr(e);
+      });
+    }
+    document.getElementById("succ-ok").onclick = submit;
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
   }
 
   /* ---------- Vue : Historique (taux de réussite) ----------------------- */
@@ -719,13 +836,14 @@
           d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
         : "—";
       return (
-        "<tr>" +
+        "<tr class='hist-row' data-hist='" + h.id + "' title='Click to see the attack detail'>" +
           "<td>" + esc(when) + "</td>" +
           "<td class='strong'>" + esc(h.target || "?") + "</td>" +
           "<td>" + (h.targetPlayer ? esc(h.targetPlayer) : "<span class='muted'>—</span>") + "</td>" +
           "<td><span class='side-" + esc((h.side || "").toLowerCase()) + " pill small-pill'>" +
             esc(h.side || "—") + "</span></td>" +
           "<td>" + (h.players || 0) + "</td>" +
+          "<td>" + (h.armies != null ? "<b>" + h.armies + "</b>" : "<span class='muted'>—</span>") + "</td>" +
           "<td><span class='tag tag-" + h.result + "'>" + h.result + "</span></td>" +
           "<td class='row-action'><button class='row-del' data-del-hist='" + h.id +
             "' title='Delete this entry'>" + ic("x") + "</button></td>" +
@@ -737,14 +855,22 @@
       '<div class="page-head"><h2>History</h2></div>' +
       (total
         ? statsHtml +
+          '<p class="muted intro">Click a row to see the detail of that attack.</p>' +
           '<div class="detail-table-wrap">' +
           '<table class="ptable"><thead><tr>' +
             "<th>Date</th><th>Target</th><th>Player</th><th>Side</th>" +
-            "<th>Players</th><th>Result</th><th></th>" +
+            "<th>Players</th><th>Armies</th><th>Result</th><th></th>" +
           "</tr></thead><tbody>" + rows + "</tbody></table></div>"
         : '<div class="empty">No nuke fired yet. On a nuke, use the ' +
           "<b>Success</b> / <b>Fail</b> buttons after firing it.</div>");
 
+    el.view.querySelectorAll("[data-hist]").forEach(function (tr) {
+      tr.onclick = function (e) {
+        if (e.target.closest("[data-del-hist]")) return; // le clic "supprimer" ne l'ouvre pas
+        var h = Store.getHistory().find(function (x) { return x.id === tr.dataset.hist; });
+        if (h) openHistoryDetail(h);
+      };
+    });
     el.view.querySelectorAll("[data-del-hist]").forEach(function (b) {
       b.onclick = function () {
         if (confirm("Delete this history entry?")) {
@@ -756,14 +882,58 @@
     refreshIcons();
   }
 
+  // Détail d'une attaque passée (depuis l'historique) : tableau des joueurs figé
+  function openHistoryDetail(h) {
+    var d = h.details || {};
+    var parts = d.participants || [];
+    var when = h.firedAt ? new Date(h.firedAt).toLocaleString() : "—";
+
+    var rows = parts.map(function (p) {
+      return "<tr><td>" + esc(p.id) + "</td><td class='strong'>" + esc(p.name) + "</td>" +
+        "<td><span class='tag tag-" + esc(p.type) + "'>" + esc(p.type) + "</span></td>" +
+        "<td>" + esc(p.qty) + "</td><td>" + esc(p.march) + "</td><td>" + esc(p.offset) + "</td>" +
+        "<td class='strong impact'>" + esc(p.impact || "") + "</td>" +
+        "<td>" + esc(p.formation || "") + "</td></tr>";
+    }).join("");
+
+    var table = parts.length
+      ? '<div class="detail-table-wrap"><table class="ptable small"><thead><tr>' +
+          "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th><th>March</th><th>Off.</th><th>Impact</th><th>Form.</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>"
+      : '<p class="muted">No attack detail was recorded for this entry.</p>';
+
+    openModal(
+      '<div class="modal-head"><h3>' + ic("crosshair") + " Attack detail</h3>" +
+        '<button class="x" data-close>✕</button></div>' +
+      '<div class="hist-detail-meta">' +
+        "<span class='tag tag-" + h.result + "'>" + h.result + "</span>" +
+        "<span class='side-" + esc((h.side || "").toLowerCase()) + " pill small-pill'>" +
+          esc(h.side || "—") + "</span>" +
+        "<span class='muted'>TARGET <b>" + esc(h.target || "?") + "</b></span>" +
+        (h.targetPlayer ? "<span class='muted'>" + ic("user") + " " + esc(h.targetPlayer) + "</span>" : "") +
+      "</div>" +
+      '<div class="hist-detail-stats">' +
+        "<div><span class='muted'>Date</span><b>" + esc(when) + "</b></div>" +
+        "<div><span class='muted'>Players</span><b>" + (h.players || 0) + "</b></div>" +
+        (h.armies != null ? "<div><span class='muted'>Armies used</span><b>" + h.armies + "</b></div>" : "") +
+        (d.spread ? "<div><span class='muted'>Spread</span><b>" + esc(d.spread) + "</b></div>" : "") +
+      "</div>" +
+      table +
+      (d.targetImage ? '<img class="hist-img" src="' + d.targetImage + '">' : "") +
+      '<div class="modal-foot"><button class="btn ghost" data-close>Close</button></div>'
+    );
+  }
+
   /* ---------- Formulaire création / édition d'une nuke ----------------- */
 
-  function openNukeForm(existing) {
+  function openNukeForm(existing, defaults) {
+    defaults = defaults || {};
     var raw = existing ? (existing.raw || "") : "";
     var imgPreview = existing && existing.targetImage
       ? '<img class="mini-preview" src="' + existing.targetImage + '">' : "";
 
-    var existingCat = existing ? existing.categoryId : null;
+    var existingCat = existing ? existing.categoryId : (defaults.categoryId || null);
+    var isPriority = existing ? existing.priority : !!defaults.priority;
     var catOpts = '<option value="">— Uncategorized —</option>' +
       Store.getCategories().map(function (c) {
         return '<option value="' + c.id + '"' + (c.id === existingCat ? " selected" : "") +
@@ -793,6 +963,8 @@
         esc(existing ? (existing.targetPlayer || "") : "") + '">' +
       '<label class="lbl">Carousel (category):</label>' +
       '<select id="nuke-cat" class="modal-input">' + catOpts + "</select>" +
+      '<label class="check-row"><input type="checkbox" id="nuke-prio"' + (isPriority ? " checked" : "") +
+        "> " + ic("star") + " Mark as a priority target (shown on the home page)</label>" +
       '<label class="lbl">Paste the Discord block or the bot table here:</label>' +
       '<textarea id="raw" class="raw" placeholder="Either:&#10;TARGET : 61667&#10;SIDE : RIGHT&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form&#10;&#10;Or the bot table:&#10;|   94011[fredite]   | army |  x5  | 6m11s |">' +
         esc(raw) + "</textarea>" +
@@ -853,6 +1025,7 @@
       var manualPlayer = (document.getElementById("target-player").value || "").trim();
       var targetPlayer = manualPlayer || parsed.targetPlayer || "";
       var categoryId = document.getElementById("nuke-cat").value || null;
+      var priority = document.getElementById("nuke-prio").checked;
 
       imgStep.then(function (imageUrl) {
         var nuke = {
@@ -860,6 +1033,7 @@
           target: manualTarget || parsed.target,
           targetPlayer: targetPlayer,
           categoryId: categoryId,
+          priority: priority,
           side: manualSide || parsed.side,
           spread: keepParticipants ? existing.spread : parsed.spread,
           participants: keepParticipants ? existing.participants : parsed.participants,
@@ -987,6 +1161,10 @@
       el.app.classList.remove("nav-open"); // referme le menu sur mobile
     };
   });
+
+  // Créer un encart depuis le menu
+  var addCatBtn = document.getElementById("sidebar-add-cat");
+  if (addCatBtn) addCatBtn.onclick = createCategoryFlow;
 
   // Menu escamotable (mobile)
   var menuToggle = document.getElementById("menu-toggle");

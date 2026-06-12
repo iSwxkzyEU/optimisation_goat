@@ -557,3 +557,52 @@ td.impact { color: var(--green); }
 .tag-success { background: rgba(65,209,139,.16); color: var(--green); }
 .tag-fail    { background: rgba(255,93,87,.16); color: var(--danger); }
 .pill.small-pill { padding: 3px 10px; font-size: 11px; }
+
+/* ---------- Menu : encarts (localisations) ---------- */
+.sidebar-cats { display: flex; flex-direction: column; gap: 3px; }
+.nav-btn.cat-nav span:not(.nav-count) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nav-btn.cat-add { color: var(--faint); }
+.nav-btn.cat-add:hover { color: var(--text); }
+.nav-btn.cat-add svg.lucide { color: var(--faint); }
+.nav-btn.cat-add:hover svg.lucide { color: var(--accent); }
+.sidebar-sep { height: 1px; background: var(--line); margin: 12px 8px; }
+
+/* Titre de page avec icône (Priority targets / nom d'encart) */
+.page-head h2 svg.lucide { width: 22px; height: 22px; vertical-align: -3px; margin-right: 9px; color: var(--accent); }
+
+/* ---------- Étoile "prioritaire" sur les cards ---------- */
+.card-star {
+  position: absolute; top: 12px; right: 12px; z-index: 2;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 9px;
+  background: rgba(0,0,0,.28); border: 1px solid var(--line-2);
+  color: var(--faint); cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s, transform .15s;
+}
+.card-star:hover { color: var(--amber); border-color: rgba(255,180,61,.5); transform: scale(1.08); }
+.card-star.on { color: var(--amber); border-color: rgba(255,180,61,.5); }
+.card-star.on svg.lucide { fill: var(--amber); }
+.card-star svg.lucide { width: 16px; height: 16px; }
+
+/* Bouton "Make priority" sur le détail */
+.btn.star-on { color: var(--amber); border-color: rgba(255,180,61,.5); }
+.btn.star-on svg.lucide { fill: var(--amber); }
+
+/* Case "prioritaire" dans le formulaire de nuke */
+.check-row { display: flex; align-items: center; gap: 9px; margin: 16px 0 2px; font-size: 14px; color: var(--text); cursor: pointer; }
+.check-row input { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; flex: none; }
+.check-row svg.lucide { width: 16px; height: 16px; color: var(--amber); vertical-align: -2px; }
+
+/* ---------- Historique : lignes cliquables + détail ---------- */
+.hist-row { cursor: pointer; }
+.succ-intro { margin: 0 0 4px; line-height: 1.5; }
+.hist-detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
+.hist-detail-meta svg.lucide { width: 14px; height: 14px; vertical-align: -2px; }
+.hist-detail-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.hist-detail-stats > div {
+  background: var(--bg-1); border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 4px;
+}
+.hist-detail-stats span.muted { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; }
+.hist-detail-stats b { font-size: 16px; }
+.hist-img { width: 100%; margin-top: 14px; border-radius: var(--radius); border: 1px solid var(--line-2); display: block; }

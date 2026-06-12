@@ -29,14 +29,13 @@
         <i data-lucide="swords"></i><span class="brand-text">GUILD WAR PLANNER</span>
       </div>
       <nav class="sidebar-nav">
-        <button class="nav-btn active" data-route="home"><i data-lucide="crosshair"></i><span>Nukes</span><span class="nav-count" id="nav-count-nukes">0</span></button>
+        <button class="nav-btn active" data-route="home"><i data-lucide="star"></i><span>Priority targets</span><span class="nav-count" id="nav-count-home">0</span></button>
+        <div class="sidebar-cats" id="sidebar-cats"></div>
+        <button class="nav-btn cat-add" id="sidebar-add-cat"><i data-lucide="folder-plus"></i><span>New carousel</span></button>
+        <div class="sidebar-sep"></div>
         <button class="nav-btn" data-route="formations"><i data-lucide="layout-grid"></i><span>Formations</span></button>
         <button class="nav-btn" data-route="history"><i data-lucide="history"></i><span>History</span></button>
       </nav>
-      <div class="sidebar-soon">
-        <span class="sidebar-label">Coming soon</span>
-        <span class="sidebar-soon-item">More categories…</span>
-      </div>
       <div class="sidebar-foot"><i data-lucide="shield"></i> Guild · 2026</div>
     </aside>
 
@@ -65,9 +64,9 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- ?v= : version des scripts — à incrémenter à chaque mise à jour
        pour forcer les navigateurs à recharger le JS (anti-cache) -->
-  <script src="js/parser.js?v=8"></script>
-  <script src="js/optimizer.js?v=8"></script>
-  <script src="js/store.js?v=8"></script>
-  <script src="js/app.js?v=8"></script>
+  <script src="js/parser.js?v=9"></script>
+  <script src="js/optimizer.js?v=9"></script>
+  <script src="js/store.js?v=9"></script>
+  <script src="js/app.js?v=9"></script>
 </body>
 </html>

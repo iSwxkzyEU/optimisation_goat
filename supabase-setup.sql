@@ -22,6 +22,10 @@ create table if not exists public.nukes (
 -- Colonnes ajoutées après coup (idempotent, met à jour une table déjà créée)
 alter table public.nukes add column if not exists target_player text;
 
+-- "priority" = cibles épinglées en page d'accueil (indépendant de l'encart :
+-- une nuke peut être rangée dans une localisation ET marquée prioritaire).
+alter table public.nukes add column if not exists priority boolean default false;
+
 create table if not exists public.formations (
   id          uuid primary key default gen_random_uuid(),
   side        text not null,
@@ -55,6 +59,12 @@ create table if not exists public.nuke_history (
   players       int default 0,
   fired_at      timestamptz default now()
 );
+
+-- armies  = nombre d'armées qu'il a fallu pour réussir (saisi au Success).
+-- details = photo du tableau de l'attaque (joueurs, temps…) pour le détail
+--           consultable dans l'historique en cliquant sur une ligne.
+alter table public.nuke_history add column if not exists armies  int;
+alter table public.nuke_history add column if not exists details jsonb;
 
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),
