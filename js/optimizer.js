@@ -6,10 +6,13 @@
      - chaque armée part avec un délai (T - sa marche, max +8s)
        pour frapper à la même seconde ; une armée trop rapide
        pour rejoindre T est signalée (elle frappe au plus tard) ;
-     - le CAP frappe en dernier, ~2s après les armées (s'il est
-       plus lent il garde sa marche, s'il ne peut pas atteindre
-       l'après-armées avec +8s il est signalé) ;
-     - plusieurs CAPs : +1s entre eux, le plus lent ferme le tir.
+     - les CAPs frappent APRÈS les armées et sont GROUPÉS sur un
+       même impact (spread minimal), au plus tôt possible ; un CAP
+       trop rapide pour rejoindre le groupe (>+8s) frappe au plus
+       tard qu'il peut et est signalé.
+   Formations auto (selon l'ordre d'impact final) :
+     - 1ʳᵉ armée à impacter = 90 ; autres armées = 110 ;
+     - CAP qui frappe après les armées = 50 ; sinon 110.
    ============================================================ */
 
 (function () {
@@ -80,30 +83,32 @@
       );
     });
 
-    // 2) CAPs après les armées : T+2s, puis +1s entre eux — délai max +8s.
-    //    Un CAP plus lent que ça garde sa marche (délai 0) : il arrive après.
-    var prev = T;
-    caps.forEach(function (c, k) {
-      var want = prev == null ? c.t : prev + (k === 0 ? CAP_GAP : 1);
-      c.nt = Math.max(c.t, Math.min(c.t + MAX_DELAY, want));
-      if (T != null && c.nt <= T) {
-        warnings.push(
-          "CAP " + (c.p.name || c.p.id) + " cannot strike after the armies even with +" +
-          MAX_DELAY + "s delay: it lands at " + toTime(c.nt) + "."
-        );
-      }
-      prev = prev == null ? c.nt : Math.max(prev, c.nt);
-    });
-    if (!caps.length) {
+    // 2) CAPs : ils frappent APRÈS les armées et sont GROUPÉS sur un même
+    //    impact pour réduire le spread, au plus tôt possible (envoi rapide :
+    //    le CAP le plus lent part sans délai). Heure commune des caps =
+    //    max(T + CAP_GAP, marche du CAP le plus lent). Un CAP trop rapide pour
+    //    rejoindre ce créneau (>+8s) frappe au plus tard qu'il peut, et est
+    //    signalé (surtout s'il tombe avant/pendant les armées).
+    var Tc = null;
+    if (caps.length) {
+      var slowestCap = caps[caps.length - 1].t; // caps triés par marche asc
+      Tc = T == null ? slowestCap : Math.max(T + CAP_GAP, slowestCap);
+      caps.forEach(function (c) {
+        c.nt = Math.min(c.t + MAX_DELAY, Tc);
+        if (c.nt < Tc) {
+          warnings.push(
+            "CAP " + (c.p.name || c.p.id) + " is too fast to join the cap group (max +" +
+            MAX_DELAY + "s delay): it lands at " + toTime(c.nt) +
+            (T != null && c.nt <= T ? ", before the armies." : ".")
+          );
+        } else if (T != null && c.nt <= T) {
+          warnings.push(
+            "CAP " + (c.p.name || c.p.id) + " lands at " + toTime(c.nt) + ", not after the armies."
+          );
+        }
+      });
+    } else {
       warnings.push("No CAP in this nuke: the last attack should be a CAP.");
-    } else if (T != null) {
-      var lastCap = caps[caps.length - 1];
-      if (lastCap.nt - T > CAP_GAP + Math.max(0, caps.length - 1)) {
-        warnings.push(
-          "CAP " + (lastCap.p.name || lastCap.p.id) + " has a slower march: " +
-          "it will strike " + (lastCap.nt - T) + "s after the armies."
-        );
-      }
     }
     if (skipped.length) {
       warnings.push(
@@ -117,6 +122,20 @@
     var spreadOf = function (xs) {
       return xs.length ? Math.max.apply(null, xs) - Math.min.apply(null, xs) : 0;
     };
+
+    // 1ʳᵉ armée à impacter (impact le plus tôt, départage par marche) → 90 form
+    var firstArmy = null;
+    armies.forEach(function (a) {
+      if (!firstArmy || a.nt < firstArmy.nt || (a.nt === firstArmy.nt && a.t < firstArmy.t)) {
+        firstArmy = a;
+      }
+    });
+
+    // Formation auto selon l'ordre d'impact final
+    function formationOf(r) {
+      if (r.p.type === "cap") return (T != null && r.nt > T) ? "50" : "110";
+      return r === firstArmy ? "90" : "110";
+    }
 
     // Résultat : armées triées par marche (délais décroissants), CAPs à la fin
     var result = armies.concat(caps).map(function (r) {
@@ -132,6 +151,7 @@
         offset: signed(r.nt - r.t),
         newTime: toTime(r.nt),
         impactSec: r.nt,
+        formation: formationOf(r),
       };
     });
 

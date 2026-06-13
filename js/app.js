@@ -632,7 +632,8 @@
         "<td><span class='tag tag-" + esc(r.type) + "'>" + esc(r.type) + "</span></td>" +
         "<td>" + esc(r.qty) + "</td><td>" + esc(r.current) + "</td>" +
         "<td class='strong " + cls + "'>" + esc(r.offset) + "</td>" +
-        "<td class='strong impact'>" + esc(r.newTime) + "</td></tr>";
+        "<td class='strong impact'>" + esc(r.newTime) + "</td>" +
+        "<td><span class='form-type-badge'>" + esc(r.formation) + "</span></td></tr>";
     }).join("");
 
     var warn = res.warnings.length
@@ -646,12 +647,13 @@
         '<button class="x" data-close>✕</button></div>' +
       '<div class="opt-summary">' +
         (res.impactTime ? 'All armies impact at <b class="ok">' + esc(res.impactTime) + "</b>" : "") +
-        (res.capTime ? " · final CAP at <b>" + esc(res.capTime) + "</b>" : "") +
-        " · spread <b>" + res.spreadBefore + "s → " + res.spreadAfter + "s</b></div>" +
+        (res.capTime ? " · caps impact at <b>" + esc(res.capTime) + "</b>" : "") +
+        " · spread <b>" + res.spreadBefore + "s → " + res.spreadAfter + "s</b>" +
+        " · formations set automatically</div>" +
       warn +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
         "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
-        "<th>March</th><th>Send delay</th><th>Impact</th>" +
+        "<th>March</th><th>Send delay</th><th>Impact</th><th>Form.</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Close</button>' +
@@ -676,6 +678,7 @@
         if (!p) return;
         p.offset = r.offset;
         p.impact = r.newTime;
+        p.formation = r.formation; // formation assignée automatiquement
       });
       // Réordonne le tableau selon l'ordre de tir optimisé
       // (les lignes non optimisées — temps illisible — restent en queue)
@@ -705,11 +708,11 @@
 
   // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code
   function optimizedAsciiTable(rows) {
-    var headers = ["ID", "Type", "Card", "Time", "Offset", "New time"];
+    var headers = ["ID", "Type", "Card", "Time", "Offset", "New time", "Form"];
     var data = rows.map(function (r) {
       return [
         (r.id || "?") + "[" + (r.name || "?") + "]",
-        r.type || "", r.qty || "", r.current, r.offset, r.newTime,
+        r.type || "", r.qty || "", r.current, r.offset, r.newTime, r.formation || "",
       ];
     });
     var widths = headers.map(function (h, i) {
@@ -749,7 +752,7 @@
     // Un Fail reste dans la liste : simple confirmation.
     if (result === "fail") {
       if (!confirm("Mark this nuke as a FAIL?\n\nIt will be saved to History and the nuke stays in the list.")) return;
-      Store.addHistoryEntry(n, "fail", null)
+      Store.addHistoryEntry(n, "fail", {})
         .then(function () { renderNukeDetail(n.id); }).catch(showErr);
       return;
     }
@@ -768,22 +771,37 @@
         ". How many armies did it take to win?</p>" +
       '<label class="lbl">Armies used</label>' +
       '<input type="number" min="0" id="succ-armies" class="modal-input" value="' + def + '">' +
+      '<label class="check-row"><input type="checkbox" id="succ-outside"> ' + ic("flame") +
+        " Razed outside the nuke (the plan wasn’t used)</label>" +
+      '<p class="muted small succ-hint">Tick this if the target was destroyed another way — ' +
+        "it still counts as a success, but is flagged in the history.</p>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Cancel</button>' +
         '<button class="btn success" id="succ-ok">' + ic("check") + " Save success</button>" +
       "</div>"
     );
     var inp = document.getElementById("succ-armies");
+    var outside = document.getElementById("succ-outside");
     inp.focus();
     inp.select();
 
+    // Rasé hors nuke → le nombre d'armées du plan n'a pas de sens, on le grise
+    outside.onchange = function () {
+      inp.disabled = outside.checked;
+      inp.style.opacity = outside.checked ? ".5" : "";
+    };
+
     function submit() {
-      var armies = parseInt(inp.value, 10);
-      if (isNaN(armies) || armies < 0) armies = def;
+      var isOutside = outside.checked;
+      var armies = null;
+      if (!isOutside) {
+        armies = parseInt(inp.value, 10);
+        if (isNaN(armies) || armies < 0) armies = def;
+      }
       var btn = document.getElementById("succ-ok");
       btn.disabled = true;
       btn.textContent = "Saving…";
-      Store.addHistoryEntry(n, "success", armies).then(function () {
+      Store.addHistoryEntry(n, "success", { armies: armies, outsideNuke: isOutside }).then(function () {
         return Store.deleteNuke(n.id);
       }).then(function () {
         closeModal();
@@ -815,6 +833,7 @@
     var total = list.length;
     var wins = list.filter(function (h) { return h.result === "success"; }).length;
     var fails = total - wins;
+    var outside = list.filter(function (h) { return h.outsideNuke; }).length;
     var rate = total ? Math.round((wins * 100) / total) : 0;
 
     var statsHtml =
@@ -825,8 +844,10 @@
           '<div class="stat-label">Success</div></div>' +
         '<div class="stat-card"><div class="stat-big ko">' + fails + "</div>" +
           '<div class="stat-label">Fail</div></div>' +
+        '<div class="stat-card"><div class="stat-big amber">' + outside + "</div>" +
+          '<div class="stat-label">Outside nuke</div></div>' +
         '<div class="stat-card"><div class="stat-big">' + total + "</div>" +
-          '<div class="stat-label">Nukes fired</div></div>' +
+          '<div class="stat-label">Recorded</div></div>' +
       "</div>";
 
     var rows = list.map(function (h) {
@@ -844,7 +865,9 @@
             esc(h.side || "—") + "</span></td>" +
           "<td>" + (h.players || 0) + "</td>" +
           "<td>" + (h.armies != null ? "<b>" + h.armies + "</b>" : "<span class='muted'>—</span>") + "</td>" +
-          "<td><span class='tag tag-" + h.result + "'>" + h.result + "</span></td>" +
+          "<td><span class='tag tag-" + h.result + "'>" + h.result + "</span>" +
+            (h.outsideNuke ? " <span class='tag tag-outside' title='Razed outside the nuke'>outside</span>" : "") +
+          "</td>" +
           "<td class='row-action'><button class='row-del' data-del-hist='" + h.id +
             "' title='Delete this entry'>" + ic("x") + "</button></td>" +
         "</tr>"
@@ -907,6 +930,7 @@
         '<button class="x" data-close>✕</button></div>' +
       '<div class="hist-detail-meta">' +
         "<span class='tag tag-" + h.result + "'>" + h.result + "</span>" +
+        (h.outsideNuke ? "<span class='tag tag-outside'>" + ic("flame") + " razed outside the nuke</span>" : "") +
         "<span class='side-" + esc((h.side || "").toLowerCase()) + " pill small-pill'>" +
           esc(h.side || "—") + "</span>" +
         "<span class='muted'>TARGET <b>" + esc(h.target || "?") + "</b></span>" +

@@ -60,11 +60,14 @@ create table if not exists public.nuke_history (
   fired_at      timestamptz default now()
 );
 
--- armies  = nombre d'armées qu'il a fallu pour réussir (saisi au Success).
--- details = photo du tableau de l'attaque (joueurs, temps…) pour le détail
---           consultable dans l'historique en cliquant sur une ligne.
-alter table public.nuke_history add column if not exists armies  int;
-alter table public.nuke_history add column if not exists details jsonb;
+-- armies       = nombre d'armées qu'il a fallu pour réussir (saisi au Success).
+-- details      = photo du tableau de l'attaque (joueurs, temps…) pour le détail
+--                consultable dans l'historique en cliquant sur une ligne.
+-- outside_nuke = la cible a été rasée HORS nuke (le plan n'a pas servi) :
+--                ça reste un succès, mais signalé comme tel dans l'historique.
+alter table public.nuke_history add column if not exists armies       int;
+alter table public.nuke_history add column if not exists details      jsonb;
+alter table public.nuke_history add column if not exists outside_nuke boolean default false;
 
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),

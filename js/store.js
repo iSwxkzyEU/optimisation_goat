@@ -64,6 +64,7 @@
       result: r.result,
       players: r.players || 0,
       armies: r.armies == null ? null : r.armies,
+      outsideNuke: !!r.outside_nuke,
       details: r.details || null,
       firedAt: r.fired_at ? new Date(r.fired_at).getTime() : 0,
     };
@@ -227,15 +228,19 @@
   }
 
   // Enregistre le résultat d'une nuke tirée ("success" ou "fail").
-  // armies = nombre d'armées utilisées pour réussir (null si non pertinent / fail).
-  function addHistoryEntry(nuke, result, armies) {
+  // opts = { armies, outsideNuke } :
+  //   armies      = nombre d'armées utilisées (null si non pertinent / fail / hors nuke)
+  //   outsideNuke = la cible a été rasée hors nuke (le plan n'a pas servi)
+  function addHistoryEntry(nuke, result, opts) {
+    opts = opts || {};
     var row = {
       target: nuke.target || null,
       target_player: nuke.targetPlayer || null,
       side: nuke.side || null,
       result: result,
       players: (nuke.participants || []).length,
-      armies: armies == null ? null : armies,
+      armies: opts.armies == null ? null : opts.armies,
+      outside_nuke: !!opts.outsideNuke,
       details: historyDetails(nuke),
     };
     return sb.from("nuke_history").insert(row).select().single().then(function (res) {

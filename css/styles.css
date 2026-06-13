@@ -556,7 +556,11 @@ td.impact { color: var(--green); }
 .stat-label { margin-top: 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .7px; font-weight: 600; }
 .tag-success { background: rgba(65,209,139,.16); color: var(--green); }
 .tag-fail    { background: rgba(255,93,87,.16); color: var(--danger); }
+.tag-outside { background: rgba(255,180,61,.16); color: var(--amber); }
+.tag-outside svg.lucide { width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; }
+.stat-big.amber { color: var(--amber); }
 .pill.small-pill { padding: 3px 10px; font-size: 11px; }
+.succ-hint { margin: 8px 0 0; line-height: 1.45; }
 
 /* ---------- Menu : encarts (localisations) ---------- */
 .sidebar-cats { display: flex; flex-direction: column; gap: 3px; }
