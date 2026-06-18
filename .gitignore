@@ -5,3 +5,9 @@ desktop.ini
 
 # Lanceur local (inutile en ligne)
 Ouvrir le site.bat
+
+# Bot Discord (Node)
+node_modules/
+.env
+.env.local
+.vercel

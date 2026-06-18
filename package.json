@@ -1,0 +1,12 @@
+{
+  "name": "optimisation-goat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord bot (/id) for the nuke optimizer — Vercel serverless.",
+  "scripts": {
+    "register": "node scripts/register-commands.js"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3"
+  }
+}

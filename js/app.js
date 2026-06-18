@@ -173,6 +173,19 @@
 
   /* ---------- Vue : Accueil (cards) ------------------------------------ */
 
+  // Recherche libre sur une nuke : cible (village visé), joueur ennemi,
+  // et villages participants (id + nom). q est déjà en minuscules + trim.
+  function nukeMatches(n, q) {
+    if ((n.target || "").toLowerCase().indexOf(q) !== -1) return true;
+    if ((n.targetPlayer || "").toLowerCase().indexOf(q) !== -1) return true;
+    return (n.participants || []).some(function (p) {
+      return (
+        (p.id || "").toLowerCase().indexOf(q) !== -1 ||
+        (p.name || "").toLowerCase().indexOf(q) !== -1
+      );
+    });
+  }
+
   function cardHtml(n) {
     var sideClass = "side-" + (n.side || "").toLowerCase();
     var starOn = n.priority ? " on" : "";
@@ -254,7 +267,7 @@
       (nukes.length
         ? '<div class="filter-bar">' + ic("search") +
             '<input id="filter-player" class="filter-input" type="text" ' +
-              'placeholder="Filter by targeted player…" value="' + esc(homeFilter) + '">' +
+              'placeholder="Filter by village ID, target or player…" value="' + esc(homeFilter) + '">' +
             '<button class="filter-clear" id="filter-clear" title="Clear filter">' + ic("x") + "</button>" +
           "</div>" +
           '<div class="cards" id="cards-box"></div>'
@@ -273,7 +286,7 @@
     function paint() {
       var q = homeFilter.trim().toLowerCase();
       var visible = q
-        ? nukes.filter(function (n) { return (n.targetPlayer || "").toLowerCase().indexOf(q) !== -1; })
+        ? nukes.filter(function (n) { return nukeMatches(n, q); })
         : nukes;
       box.innerHTML = visible.length
         ? visible.map(cardHtml).join("")

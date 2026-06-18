@@ -166,9 +166,13 @@
     };
   }
 
-  window.NukeOptimizer = {
+  var api = {
     optimize: optimize,
     toSeconds: toSeconds,
     toTime: toTime,
   };
+  // Navigateur : expose window.NukeOptimizer (comme avant).
+  if (typeof window !== "undefined") window.NukeOptimizer = api;
+  // Node (bot Discord) : réutilise EXACTEMENT la même logique via require().
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
