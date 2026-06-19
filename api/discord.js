@@ -93,6 +93,7 @@ function buildNukeMessage(nuke, village) {
   if (nuke.target_player) header += " — " + nuke.target_player;
   if (nuke.side) header += " (" + nuke.side + ")";
   if (result.impactTime) header += " · impact " + result.impactTime;
+  header += " · spread " + result.spreadBefore + "s → " + result.spreadAfter + "s";
 
   var body = header + "\n```ansi\n" + table + "\n```";
 
