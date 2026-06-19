@@ -94,11 +94,11 @@ function buildNukeMessage(nuke, village) {
   if (nuke.side) header += " (" + nuke.side + ")";
   if (result.impactTime) header += " · impact " + result.impactTime;
 
-  var body = header + "\n```\n" + table + "\n```";
+  var body = header + "\n```ansi\n" + table + "\n```";
 
   // Garde-fou : limite Discord = 2000 caractères.
   if (body.length > 2000) {
-    body = "**TARGET " + (nuke.target || village) + "**\n```\n" + table + "\n```";
+    body = "**TARGET " + (nuke.target || village) + "**\n```ansi\n" + table + "\n```";
     if (body.length > 2000) {
       return "⚠️ This nuke's table is too large to display here (Discord 2000-char limit). Open it on the site.";
     }
