@@ -36,30 +36,53 @@ if (!APP_ID || !BOT_TOKEN) {
   process.exit(1);
 }
 
-var command = {
-  name: "id",
-  description: "Show the optimized launch table of the nuke targeting a village",
-  options: [
-    {
-      type: 3, // STRING
-      name: "village",
-      description: "Targeted village ID (e.g. 41707)",
-      required: true,
-    },
-  ],
-};
+// PUT groupé : la liste ci-dessous REMPLACE toutes les commandes existantes.
+var commands = [
+  {
+    name: "id",
+    description: "Show the optimized launch table of the nuke targeting a village",
+    options: [
+      {
+        type: 3, // STRING
+        name: "village",
+        description: "Targeted village ID (e.g. 41707)",
+        required: true,
+      },
+    ],
+  },
+  {
+    name: "optimise",
+    description: "Optimize a nuke's launch times with a ±seconds budget (omit seconds for raw times)",
+    options: [
+      {
+        type: 3, // STRING
+        name: "village",
+        description: "Targeted village ID (e.g. 41707)",
+        required: true,
+      },
+      {
+        type: 4, // INTEGER
+        name: "seconds",
+        description: "Adjustment budget ±seconds (omit to show the raw, unoptimized times)",
+        required: false,
+        min_value: 0,
+        max_value: 60,
+      },
+    ],
+  },
+];
 
 var url = GUILD_ID
   ? "https://discord.com/api/v10/applications/" + APP_ID + "/guilds/" + GUILD_ID + "/commands"
   : "https://discord.com/api/v10/applications/" + APP_ID + "/commands";
 
 fetch(url, {
-  method: "POST",
+  method: "PUT", // remplace l'ensemble des commandes par la liste `commands`
   headers: {
     Authorization: "Bot " + BOT_TOKEN,
     "Content-Type": "application/json",
   },
-  body: JSON.stringify(command),
+  body: JSON.stringify(commands),
 })
   .then(function (res) {
     return res.text().then(function (body) {
@@ -67,7 +90,8 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commande /id enregistrée " + (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
+      console.log("✅ Commandes /id et /optimise enregistrées " +
+        (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
       console.log(body);
     });
   })

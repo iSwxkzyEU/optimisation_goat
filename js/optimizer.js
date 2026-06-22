@@ -60,7 +60,12 @@
 
   function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
 
-  function optimize(participants) {
+  function optimize(participants, maxAdj) {
+    // Budget d'ajustement de tir : ±maxAdj s (par défaut MAX_ADJ = 8).
+    // Le bot Discord /optimise <id> <s> permet de le faire varier ;
+    // une valeur absente / négative retombe sur la valeur par défaut.
+    var adj = (maxAdj == null || maxAdj < 0) ? MAX_ADJ : maxAdj;
+
     var rows = (participants || []).map(function (p, idx) {
       return { p: p, idx: idx, t: toSeconds(p.march) };
     });
@@ -97,8 +102,8 @@
     valid.forEach(function (r) {
       var target = (r.p.type === "cap") ? capTarget : armyTarget;
       r.raw = target - r.t;                          // ajustement idéal pour être synchro
-      r.fire = clamp(r.raw, -MAX_ADJ, MAX_ADJ);      // ajustement réel, borné ±MAX_ADJ
-      r.clamped = r.raw > MAX_ADJ || r.raw < -MAX_ADJ;
+      r.fire = clamp(r.raw, -adj, adj);              // ajustement réel, borné ±adj
+      r.clamped = r.raw > adj || r.raw < -adj;
       r.nt = r.t + r.fire;                           // impact réel (marche + ajustement)
     });
 
@@ -106,24 +111,24 @@
       ? Math.max.apply(null, armies.map(function (a) { return a.nt; }))
       : null;
 
-    // --- Warnings : unités hors de portée des ±MAX_ADJ s ---
+    // --- Warnings : unités hors de portée des ±adj s ---
     armies.forEach(function (a) {
-      if (a.raw > MAX_ADJ) {
-        warnings.push((a.p.name || a.p.id) + " is too fast to sync (max ±" + MAX_ADJ +
+      if (a.raw > adj) {
+        warnings.push((a.p.name || a.p.id) + " is too fast to sync (max ±" + adj +
           "s): it lands at " + toTime(a.nt) + ", " + (armyTarget - a.nt) + "s before the others.");
-      } else if (a.raw < -MAX_ADJ) {
-        warnings.push((a.p.name || a.p.id) + " is too slow to sync (max ±" + MAX_ADJ +
+      } else if (a.raw < -adj) {
+        warnings.push((a.p.name || a.p.id) + " is too slow to sync (max ±" + adj +
           "s): it lands at " + toTime(a.nt) + ", " + (a.nt - armyTarget) + "s after the others.");
       }
     });
     caps.forEach(function (c) {
-      if (c.raw > MAX_ADJ) {
+      if (c.raw > adj) {
         warnings.push("CAP " + (c.p.name || c.p.id) + " is too fast to join the cap group (max ±" +
-          MAX_ADJ + "s): it lands at " + toTime(c.nt) +
+          adj + "s): it lands at " + toTime(c.nt) +
           (maxArmyImpact != null && c.nt <= maxArmyImpact ? ", BEFORE the armies." : "."));
-      } else if (c.raw < -MAX_ADJ) {
+      } else if (c.raw < -adj) {
         warnings.push("CAP " + (c.p.name || c.p.id) + " is too slow to join the cap group (max ±" +
-          MAX_ADJ + "s): it lands at " + toTime(c.nt) + ".");
+          adj + "s): it lands at " + toTime(c.nt) + ".");
       } else if (maxArmyImpact != null && c.nt <= maxArmyImpact) {
         warnings.push("CAP " + (c.p.name || c.p.id) + " lands at " + toTime(c.nt) + ", not after the armies.");
       }
@@ -190,12 +195,40 @@
       spreadBefore: spreadBefore,
       spreadAfter: spreadAfter,
       launchWindow: launchWindow,
+      maxAdj: adj,
       warnings: warnings,
     };
   }
 
+  // Temps BRUTS, non optimisés : aucune correction de tir. Tout le monde
+  // part au même top (Fire +0s) -> l'impact = la marche, et on RANGE par
+  // marche pour voir l'ordre d'arrivée "naturel" avant optimisation.
+  function rawList(participants) {
+    var rows = (participants || []).map(function (p, idx) {
+      return { p: p, idx: idx, t: toSeconds(p.march) };
+    }).filter(function (r) { return r.t != null; });
+    rows.sort(function (a, b) { return a.t - b.t || a.idx - b.idx; });
+    return rows.map(function (r) {
+      return {
+        idx: r.idx,
+        id: r.p.id,
+        name: r.p.name,
+        type: r.p.type,
+        qty: r.p.qty,
+        current: toTime(r.t),     // marche
+        marchSec: r.t,
+        offsetSec: 0,
+        offset: "+0s",            // aucun décalage
+        newTime: toTime(r.t),     // impact = marche (tir simultané)
+        impactSec: r.t,
+        formation: r.p.formation || "",
+      };
+    });
+  }
+
   var api = {
     optimize: optimize,
+    rawList: rawList,
     toSeconds: toSeconds,
     toTime: toTime,
   };

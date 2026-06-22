@@ -1,8 +1,10 @@
 /* ============================================================
    BOT DISCORD — endpoint serverless (Vercel).
-   Slash-command /id <village> : retrouve la nuke dont la CIBLE
-   (target) est ce village, l'optimise avec la MÊME logique que
-   le site (js/optimizer.js), et colle le tableau ASCII.
+   Slash-commands (retrouvent la nuke dont la CIBLE = ce village,
+   même logique que le site via js/optimizer.js) :
+     /id <village>                  : tableau optimisé (budget ±8s)
+     /optimise <village> [seconds]  : optimisé avec un budget ±seconds ;
+                                      sans seconds -> temps BRUTS non optimisés.
    Si la nuke n'existe pas → message anglais "à créer sur le site".
 
    Discord envoie une requête signée (Ed25519) qu'il FAUT vérifier,
@@ -82,8 +84,18 @@ function reply(res, content, ephemeral) {
   });
 }
 
-function buildNukeMessage(nuke, village) {
-  var result = optimizer.optimize(nuke.participants || []);
+// Tronque un corps Discord à 2000 caractères en gardant le bloc table.
+function fitDiscord(richHeader, plainHeader, table) {
+  var body = richHeader + "\n```ansi\n" + table + "\n```";
+  if (body.length <= 2000) return body;
+  body = plainHeader + "\n```ansi\n" + table + "\n```";
+  if (body.length <= 2000) return body;
+  return "⚠️ This nuke's table is too large to display here (Discord 2000-char limit). Open it on the site.";
+}
+
+// Tableau OPTIMISÉ. maxAdj = budget ±s (undefined => défaut 8).
+function buildNukeMessage(nuke, village, maxAdj) {
+  var result = optimizer.optimize(nuke.participants || [], maxAdj);
   if (!result.rows.length) {
     return "⚠️ Nuke `" + village + "` has no readable participants. Please check it on the site.";
   }
@@ -92,20 +104,29 @@ function buildNukeMessage(nuke, village) {
   var header = "**TARGET " + (nuke.target || village) + "**";
   if (nuke.target_player) header += " — " + nuke.target_player;
   if (nuke.side) header += " (" + nuke.side + ")";
+  header += " · ±" + result.maxAdj + "s budget";
   if (result.impactTime) header += " · armies impact " + result.impactTime;
   if (result.capTime) header += " · caps " + result.capTime;
-  header += " · send window +" + result.launchWindow + "s";
 
-  var body = header + "\n```ansi\n" + table + "\n```";
-
-  // Garde-fou : limite Discord = 2000 caractères.
-  if (body.length > 2000) {
-    body = "**TARGET " + (nuke.target || village) + "**\n```ansi\n" + table + "\n```";
-    if (body.length > 2000) {
-      return "⚠️ This nuke's table is too large to display here (Discord 2000-char limit). Open it on the site.";
-    }
+  var body = fitDiscord(header, "**TARGET " + (nuke.target || village) + "** · ±" + result.maxAdj + "s", table);
+  // Avertissements éventuels, ajoutés sous le tableau si la place le permet.
+  if (result.warnings.length) {
+    var warn = "\n⚠️ " + result.warnings.join("\n⚠️ ");
+    if (!body.startsWith("⚠️") && (body.length + warn.length) <= 2000) body += warn;
   }
   return body;
+}
+
+// Tableau BRUT (non optimisé) : /optimise <id> sans secondes.
+function buildRawMessage(nuke, village) {
+  var rows = optimizer.rawList(nuke.participants || []);
+  if (!rows.length) {
+    return "⚠️ Nuke `" + village + "` has no readable participants. Please check it on the site.";
+  }
+  var table = renderTable(rows);
+  var header = "**TARGET " + (nuke.target || village) + "** · RAW times (not optimized)";
+  if (nuke.target_player) header += " — " + nuke.target_player;
+  return fitDiscord(header, "**TARGET " + (nuke.target || village) + "** · RAW", table);
 }
 
 function handler(req, res) {
@@ -138,13 +159,20 @@ function handler(req, res) {
         return;
       }
 
-      if (body.type === INTERACTION.COMMAND && body.data && body.data.name === "id") {
+      var cmd = body.type === INTERACTION.COMMAND && body.data ? body.data.name : null;
+      if (cmd === "id" || cmd === "optimise") {
         var opts = body.data.options || [];
         var villageOpt = opts.find(function (o) { return o.name === "village"; });
         var village = villageOpt ? String(villageOpt.value).trim() : "";
+        var secondsOpt = opts.find(function (o) { return o.name === "seconds"; });
+        var seconds = secondsOpt != null ? parseInt(secondsOpt.value, 10) : null;
 
         if (!village) {
-          reply(res, "Please provide a village ID, e.g. `/id 41707`.", true);
+          reply(res, "Please provide a village ID, e.g. `/" + cmd + " 41707`.", true);
+          return;
+        }
+        if (cmd === "optimise" && seconds != null && (isNaN(seconds) || seconds < 0)) {
+          reply(res, "Seconds must be 0 or more, e.g. `/optimise 41707 8` (omit it for raw times).", true);
           return;
         }
 
@@ -159,7 +187,12 @@ function handler(req, res) {
               );
               return;
             }
-            reply(res, buildNukeMessage(nuke, village), false);
+            // /optimise <id> sans secondes => temps bruts ; sinon optimisé ±seconds.
+            // /id => optimisé avec le budget par défaut (±8).
+            var msg = (cmd === "optimise" && seconds == null)
+              ? buildRawMessage(nuke, village)
+              : buildNukeMessage(nuke, village, cmd === "optimise" ? seconds : undefined);
+            reply(res, msg, false);
           })
           .catch(function () {
             reply(res, "⚠️ Could not reach the database. Please try again in a moment.", true);
