@@ -104,11 +104,12 @@ function buildNukeMessage(nuke, village, maxAdj) {
   var header = "**TARGET " + (nuke.target || village) + "**";
   if (nuke.target_player) header += " — " + nuke.target_player;
   if (nuke.side) header += " (" + nuke.side + ")";
-  header += " · ±" + result.maxAdj + "s budget";
-  if (result.impactTime) header += " · armies impact " + result.impactTime;
-  if (result.capTime) header += " · caps " + result.capTime;
+  header += " · fire window " + result.fireWindow + "s (max " + result.maxWindow + "s)";
+  header += result.impactSpread ? " · impacts spread " + result.impactSpread + "s" : " · perfectly synced";
+  header += "\n*Fire @ = fire when the group countdown hits this · Lands = vs synced impact T (caps +" + result.capGap + "s)*";
 
-  var body = fitDiscord(header, "**TARGET " + (nuke.target || village) + "** · ±" + result.maxAdj + "s", table);
+  var plain = "**TARGET " + (nuke.target || village) + "** · fire window " + result.fireWindow + "s";
+  var body = fitDiscord(header, plain, table);
   // Avertissements éventuels, ajoutés sous le tableau si la place le permet.
   if (result.warnings.length) {
     var warn = "\n⚠️ " + result.warnings.join("\n⚠️ ");

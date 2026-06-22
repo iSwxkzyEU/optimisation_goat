@@ -52,7 +52,7 @@ var commands = [
   },
   {
     name: "optimise",
-    description: "Optimize a nuke's launch times with a ±seconds budget (omit seconds for raw times)",
+    description: "Optimize a nuke within a max fire window (omit seconds for raw times)",
     options: [
       {
         type: 3, // STRING
@@ -63,7 +63,7 @@ var commands = [
       {
         type: 4, // INTEGER
         name: "seconds",
-        description: "Adjustment budget ±seconds (omit to show the raw, unoptimized times)",
+        description: "Max fire window in seconds (omit to show the raw, unoptimized times)",
         required: false,
         min_value: 0,
         max_value: 60,
