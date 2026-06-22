@@ -661,7 +661,7 @@
       '<div class="opt-summary">' +
         (res.impactTime ? 'All armies impact together at <b class="ok">' + esc(res.impactTime) + "</b>" : "") +
         (res.capTime ? " · caps land last at <b>" + esc(res.capTime) + "</b>" : "") +
-        " · send window <b>+" + res.launchWindow + "s</b>" +
+        " · send window <b>" + res.launchWindow + "s</b>" +
         " · sorted by impact · formations set automatically</div>" +
       warn +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
