@@ -489,7 +489,7 @@
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
               "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th>" +
-              "<th>March</th><th>Off.</th><th>Impact</th><th>Side</th><th>Formation</th><th></th>" +
+              "<th>March</th><th>Fire</th><th>Impact</th><th>Side</th><th>Formation</th><th></th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
             '<button class="btn add-row" id="add-row">' + ic("plus") + " Add a row</button>" +
           "</div>" +
@@ -582,7 +582,7 @@
         '<div class="pf"><label>Type</label><select id="pf-type">' + typeOpts + "</select></div>" +
         '<div class="pf"><label>Quantity</label><input id="pf-qty" placeholder="x4" value="' + v("qty") + '"></div>' +
         '<div class="pf"><label>March</label><input id="pf-march" placeholder="16m32s" value="' + v("march") + '"></div>' +
-        '<div class="pf"><label>Offset</label><input id="pf-offset" placeholder="+0s" value="' + v("offset") + '"></div>' +
+        '<div class="pf"><label>Fire</label><input id="pf-offset" placeholder="+0s" value="' + v("offset") + '"></div>' +
         '<div class="pf"><label>Side</label><select id="pf-side">' + sideOpts + "</select></div>" +
         '<div class="pf"><label>Formation</label><input id="pf-form" list="pf-forms" placeholder="90" value="' + v("formation") + '">' +
           '<datalist id="pf-forms">' + formOpts + "</datalist></div>" +
@@ -659,14 +659,14 @@
       '<div class="modal-head"><h3>' + ic("timer") + ' Synchronized impact times</h3>' +
         '<button class="x" data-close>✕</button></div>' +
       '<div class="opt-summary">' +
-        (res.impactTime ? 'All armies impact at <b class="ok">' + esc(res.impactTime) + "</b>" : "") +
-        (res.capTime ? " · caps impact at <b>" + esc(res.capTime) + "</b>" : "") +
-        " · spread <b>" + res.spreadBefore + "s → " + res.spreadAfter + "s</b>" +
-        " · formations set automatically</div>" +
+        (res.impactTime ? 'All armies impact together at <b class="ok">' + esc(res.impactTime) + "</b>" : "") +
+        (res.capTime ? " · caps land last at <b>" + esc(res.capTime) + "</b>" : "") +
+        " · send window <b>+" + res.launchWindow + "s</b>" +
+        " · sorted by impact · formations set automatically</div>" +
       warn +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
         "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
-        "<th>March</th><th>Send delay</th><th>Impact</th><th>Form.</th>" +
+        "<th>March</th><th>Fire</th><th>Impact</th><th>Form.</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Close</button>' +
@@ -721,7 +721,7 @@
 
   // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code
   function optimizedAsciiTable(rows) {
-    var headers = ["ID", "Type", "Card", "Time", "Offset", "New time", "Form"];
+    var headers = ["ID", "Type", "Card", "March", "Fire", "Impact", "Form"];
     var data = rows.map(function (r) {
       return [
         (r.id || "?") + "[" + (r.name || "?") + "]",
@@ -934,7 +934,7 @@
 
     var table = parts.length
       ? '<div class="detail-table-wrap"><table class="ptable small"><thead><tr>' +
-          "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th><th>March</th><th>Off.</th><th>Impact</th><th>Form.</th>" +
+          "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th><th>March</th><th>Fire</th><th>Impact</th><th>Form.</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>"
       : '<p class="muted">No attack detail was recorded for this entry.</p>';
 
@@ -1116,7 +1116,7 @@
       (parsed.spread ? " · SPREAD " + esc(parsed.spread) : "") +
       " · " + parsed.participants.length + " players</div>" +
       '<table class="ptable small"><thead><tr><th>ID</th><th>Player</th><th>Type</th>' +
-      "<th>Qty</th><th>March</th><th>Off.</th><th>Form.</th></tr></thead>" +
+      "<th>Qty</th><th>March</th><th>Fire</th><th>Form.</th></tr></thead>" +
       "<tbody>" + rows + "</tbody></table>";
     refreshIcons();
   }

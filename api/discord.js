@@ -92,8 +92,9 @@ function buildNukeMessage(nuke, village) {
   var header = "**TARGET " + (nuke.target || village) + "**";
   if (nuke.target_player) header += " — " + nuke.target_player;
   if (nuke.side) header += " (" + nuke.side + ")";
-  if (result.impactTime) header += " · impact " + result.impactTime;
-  header += " · spread " + result.spreadBefore + "s → " + result.spreadAfter + "s";
+  if (result.impactTime) header += " · armies impact " + result.impactTime;
+  if (result.capTime) header += " · caps " + result.capTime;
+  header += " · send window +" + result.launchWindow + "s";
 
   var body = header + "\n```ansi\n" + table + "\n```";
 

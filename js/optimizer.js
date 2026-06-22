@@ -1,16 +1,18 @@
 /* ============================================================
-   OPTIMIZER — synchronise les temps d'impact d'une nuke.
+   OPTIMIZER — synchronise les temps d'IMPACT d'une nuke.
 
-   Modèle ±8 (cf. LOGIQUE-METIER.txt) :
-     - chaque unité peut être ajustée de -8 s à +8 s (avance OU
-       retard) ; c'est la colonne "Offset" ;
-     - OBJECTIF : toutes les ARMÉES frappent à la même seconde T,
-       et tous les CAPITAINES à T + 2 (coussin anti-décalage
-       serveur) -> le dernier impact est donc un capitaine ;
-     - T est CENTRÉ pour minimiser le plus gros écart = le plan le
-       plus serré possible (spread idéal = 2 s) ;
-     - si le groupe est trop dispersé (> 16 s d'écart de marche),
-       on fait AU MIEUX dans les ±8 et on SIGNALE ce qui déborde.
+   Modèle (cf. discussion métier) :
+     - distinguer clairement HEURE DE TIR et HEURE D'IMPACT :
+         impact = heure_de_tir + marche   (la marche est fixe).
+     - NUKE SYNCHRONISÉE : toutes les ARMÉES frappent à la MÊME
+       seconde = la marche de l'armée la plus LENTE (aucune ne peut
+       frapper avant elle) ; les CAPITAINES frappent CAP_GAP s après
+       -> un capitaine ferme TOUJOURS la marche.
+     - chaque unité reçoit un "Fire" = délai de tir depuis un top GO
+       commun (0 = première tirée, valeurs ≥ 0). Une unité rapide qui
+       doit frapper tard est simplement tirée plus tard (gros Fire).
+     - l'ordre de TIR n'a pas d'importance ; ce qui compte c'est
+       l'ordre d'ARRIVÉE -> le tableau est RANGÉ PAR IMPACT.
    Formations auto (selon l'ordre d'impact final) :
      - 1ʳᵉ armée à impacter = 90 ; autres armées = 110 ;
      - CAP qui frappe après les armées = 50 ; sinon 110.
@@ -19,10 +21,7 @@
 (function () {
   "use strict";
 
-  var MAX_ADJ = 8;  // ajustement maximum en secondes, dans les DEUX sens (-8..+8)
   var CAP_GAP = 2;  // les CAPs frappent CAP_GAP secondes après les armées
-
-  function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
 
   // "1h21m42s" / "30m:13s" / "30:13" / "45s" / "6m" -> secondes (null si illisible)
   function toSeconds(str) {
@@ -53,9 +52,8 @@
     return s + "s";
   }
 
-  function signed(n) {
-    return (n > 0 ? "+" : "") + n + "s";
-  }
+  // Délai de tir depuis le GO : toujours ≥ 0, affiché "+Ns".
+  function fmtFire(n) { return "+" + n + "s"; }
 
   function optimize(participants) {
     var rows = (participants || []).map(function (p, idx) {
@@ -66,113 +64,90 @@
     var valid = rows.filter(function (r) { return r.t != null; });
     var armies = valid.filter(function (r) { return r.p.type !== "cap"; });
     var caps = valid.filter(function (r) { return r.p.type === "cap"; });
-    var byTime = function (a, b) { return a.t - b.t || a.idx - b.idx; };
-    armies.sort(byTime);
-    caps.sort(byTime);
 
     var warnings = [];
 
-    // --- CHOIX DE T : on centre tout le monde (spread minimal) ---
-    // Chaque armée "souhaite" T = sa marche ; chaque CAP "souhaite"
-    // T = sa marche - CAP_GAP (puisqu'il vise T + CAP_GAP). On prend
-    // T = milieu de [min, max] des souhaits -> minimise le plus gros
-    // offset, donc le plan le plus serré possible.
-    var desired = armies.map(function (a) { return a.t; })
-      .concat(caps.map(function (c) { return c.t - CAP_GAP; }));
+    // --- CIBLE D'IMPACT : synchro sur la plus LENTE ---
+    // Les armées frappent toutes à T = marche de l'armée la plus lente ;
+    // les CAPs à T + CAP_GAP. (Nuke 100 % caps : ils se synchronisent
+    // entre eux sur le cap le plus lent.)
+    var maxArmyT = armies.length
+      ? Math.max.apply(null, armies.map(function (a) { return a.t; }))
+      : null;
+    var maxCapT = caps.length
+      ? Math.max.apply(null, caps.map(function (c) { return c.t; }))
+      : null;
 
-    var T = null;
-    if (desired.length) {
-      var lo = Math.min.apply(null, desired);
-      var hi = Math.max.apply(null, desired);
-      T = Math.round((lo + hi) / 2);
-    }
-    var armyTarget = T;                              // les armées visent T
-    var capTarget = T == null ? null : T + CAP_GAP;  // les CAPs visent T + 2
+    var armyTarget = maxArmyT;
+    var capTarget = armyTarget != null ? armyTarget + CAP_GAP : maxCapT;
 
-    // --- ARMÉES : offset = clamp(T - marche, -8, +8) ---
-    armies.forEach(function (a) {
-      var raw = armyTarget - a.t;
-      a.nt = a.t + clamp(raw, -MAX_ADJ, MAX_ADJ);
-      if (raw > MAX_ADJ) {
-        warnings.push((a.p.name || a.p.id) + " is too fast to sync (max " + MAX_ADJ +
-          "s adjust): it lands at " + toTime(a.nt) + ", " + (armyTarget - a.nt) + "s before the others.");
-      } else if (raw < -MAX_ADJ) {
-        warnings.push((a.p.name || a.p.id) + " is too slow to sync (max " + MAX_ADJ +
-          "s adjust): it lands at " + toTime(a.nt) + ", " + (a.nt - armyTarget) + "s after the others.");
-      }
+    // Heure de tir "absolue" (relative à l'impact) = impact - marche.
+    valid.forEach(function (r) {
+      var target = (r.p.type === "cap") ? capTarget : armyTarget;
+      r.fireAbs = target - r.t;   // peut être négatif avant normalisation
+    });
+
+    // --- GO : on cale le PREMIER tir à 0, les autres en délai positif ---
+    var go = valid.length
+      ? Math.min.apply(null, valid.map(function (r) { return r.fireAbs; }))
+      : 0;
+    valid.forEach(function (r) {
+      r.fire = r.fireAbs - go;   // délai de tir depuis le GO (≥ 0)
+      r.nt = r.fire + r.t;       // impact (cohérent : tir + marche = impact)
     });
 
     var maxArmyImpact = armies.length
       ? Math.max.apply(null, armies.map(function (a) { return a.nt; }))
       : null;
 
-    // --- CAPs : visent T + CAP_GAP, même fenêtre ±8 ---
-    if (caps.length) {
-      caps.forEach(function (c) {
-        var raw = capTarget - c.t;
-        c.nt = c.t + clamp(raw, -MAX_ADJ, MAX_ADJ);
-        if (raw > MAX_ADJ) {
-          warnings.push("CAP " + (c.p.name || c.p.id) + " is too fast to join the cap group (max " +
-            MAX_ADJ + "s adjust): it lands at " + toTime(c.nt) +
-            (maxArmyImpact != null && c.nt <= maxArmyImpact ? ", before the armies." : "."));
-        } else if (raw < -MAX_ADJ) {
-          warnings.push("CAP " + (c.p.name || c.p.id) + " is too slow to join the cap group (max " +
-            MAX_ADJ + "s adjust): it lands at " + toTime(c.nt) + ".");
-        } else if (maxArmyImpact != null && c.nt <= maxArmyImpact) {
-          warnings.push("CAP " + (c.p.name || c.p.id) + " lands at " + toTime(c.nt) + ", not after the armies.");
-        }
-      });
-    } else {
+    if (!caps.length) {
       warnings.push("No CAP in this nuke: the last attack should be a CAP.");
     }
-
     if (skipped.length) {
       warnings.push("Unreadable march time, player(s) left out: " +
         skipped.map(function (r) { return r.p.name || r.p.id; }).join(", ") + ".");
     }
 
-    // --- RÈGLE D'OR : le dernier impact doit être un capitaine ---
-    if (caps.length && valid.length) {
-      var lastImpact = Math.max.apply(null, valid.map(function (r) { return r.nt; }));
-      var lastIsCap = caps.some(function (c) { return c.nt === lastImpact; });
-      if (!lastIsCap) {
-        warnings.push("The last impact is not a CAP — a captain should land last.");
-      }
-    }
-
-    // --- Spreads ---
-    var spreadOf = function (xs) {
-      return xs.length ? Math.max.apply(null, xs) - Math.min.apply(null, xs) : 0;
-    };
-    var spreadBefore = spreadOf(valid.map(function (r) { return r.t; }));
-    var spreadAfter = spreadOf(valid.map(function (r) { return r.nt; }));
-
-    // 1ʳᵉ armée à impacter (impact le plus tôt, départage par marche) → 90 form
+    // --- Formations (selon l'ordre d'impact) ---
+    // 1ʳᵉ armée à impacter = 90 (départage : marche la plus courte) ; autres = 110.
     var firstArmy = null;
     armies.forEach(function (a) {
       if (!firstArmy || a.nt < firstArmy.nt || (a.nt === firstArmy.nt && a.t < firstArmy.t)) {
         firstArmy = a;
       }
     });
-
     function formationOf(r) {
       if (r.p.type === "cap") return (maxArmyImpact != null && r.nt > maxArmyImpact) ? "50" : "110";
       return r === firstArmy ? "90" : "110";
     }
 
-    // Résultat : armées (triées par marche) puis CAPs
-    var result = armies.concat(caps).map(function (r) {
+    // --- Spreads / fenêtre de tir ---
+    var spreadOf = function (xs) {
+      return xs.length ? Math.max.apply(null, xs) - Math.min.apply(null, xs) : 0;
+    };
+    var spreadBefore = spreadOf(valid.map(function (r) { return r.t; }));
+    var spreadAfter = spreadOf(valid.map(function (r) { return r.nt; }));
+    var launchWindow = spreadOf(valid.map(function (r) { return r.fire; })); // = max fire (min = 0)
+
+    // --- RÉSULTAT : RANGÉ PAR ORDRE D'IMPACT (arrivée sur cible) ---
+    // impact croissant -> armées synchronisées d'abord, CAPs en dernier.
+    // Départage à impact égal : par ordre de TIR (premier tiré en haut).
+    var ordered = valid.slice().sort(function (a, b) {
+      return a.nt - b.nt || a.fire - b.fire || a.idx - b.idx;
+    });
+
+    var result = ordered.map(function (r) {
       return {
         idx: r.idx,
         id: r.p.id,
         name: r.p.name,
         type: r.p.type,
         qty: r.p.qty,
-        current: toTime(r.t),
+        current: toTime(r.t),     // marche
         marchSec: r.t,
-        offsetSec: r.nt - r.t,
-        offset: signed(r.nt - r.t),
-        newTime: toTime(r.nt),
+        offsetSec: r.fire,        // délai de tir depuis le GO (≥ 0)
+        offset: fmtFire(r.fire),  // "Fire" : "+Ns"
+        newTime: toTime(r.nt),    // heure d'impact
         impactSec: r.nt,
         formation: formationOf(r),
       };
@@ -180,11 +155,12 @@
 
     return {
       rows: result,
-      impactTime: armies.length ? toTime(armyTarget) : null,
-      impactSec: armies.length ? armyTarget : null,
-      capTime: caps.length ? toTime(capTarget) : null,
+      impactTime: armies.length ? toTime(armyTarget - go) : null,
+      impactSec: armies.length ? armyTarget - go : null,
+      capTime: caps.length ? toTime(capTarget - go) : null,
       spreadBefore: spreadBefore,
       spreadAfter: spreadAfter,
+      launchWindow: launchWindow,
       warnings: warnings,
     };
   }
