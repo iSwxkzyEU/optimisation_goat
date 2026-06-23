@@ -330,7 +330,7 @@ function handleComponent(res, body) {
         // perdent quand la lambda Vercel gèle après la réponse). On empile autant
         // de plans que la limite Discord (2000 car.) le permet.
         var msgs = variants.map(function (v, i) {
-          return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length) });
+          return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length), plain: true });
         });
         var combined = "";
         var shown = 0;
@@ -419,6 +419,7 @@ function variantTableMessage(row, variant, mode, opts) {
   var participants = (variant && variant.participants) || [];
   var side = variant && variant.side;
   var tag = opts.tag ? " · " + opts.tag : "";
+  var noColor = !!opts.plain; // "All plans" : tableaux sans couleur pour tenir en 2000 car.
 
   if (mode === "raw") {
     var rawRows = optimizer.rawList(participants);
@@ -427,7 +428,8 @@ function variantTableMessage(row, variant, mode, opts) {
       (row.target_player ? " — " + row.target_player : "") +
       (side ? " (" + side + ")" : "") + tag + " · SAME TIME — everyone fires together (not optimized)";
     // Pas de colonne "Fire @" : tout le monde tire en même temps.
-    return fitDiscord(rawHeader, "**TARGET " + target + "** · SAME TIME", renderTable(rawRows, { hideFire: true }));
+    return fitDiscord(rawHeader, "**TARGET " + target + "** · SAME TIME",
+      renderTable(rawRows, { hideFire: true, noColor: noColor }));
   }
 
   var result = optimizer.optimize(participants, opts.maxAdj);
@@ -439,7 +441,7 @@ function variantTableMessage(row, variant, mode, opts) {
   header += result.impactSpread ? " · impacts spread " + result.impactSpread + "s" : " · perfectly synced";
   header += "\n*Fire @ = fire when the group countdown hits this (caps +" + result.capGap + "s later)*";
   var plain = "**TARGET " + target + "** · fire window " + result.fireWindow + "s";
-  return fitDiscord(header, plain, renderTable(result.rows));
+  return fitDiscord(header, plain, renderTable(result.rows, { noColor: noColor }));
 }
 
 // Récap de tir (SANS tableau) : cible, side, mentions, GIF. tag = nom du plan.
