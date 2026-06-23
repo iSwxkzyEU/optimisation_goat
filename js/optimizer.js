@@ -194,14 +194,14 @@
     };
   }
 
-  // Temps BRUTS, non optimisés : on affiche la marche telle quelle comme
-  // valeur de tir (Fire @ = marche) -> tout serait synchro mais sur une
-  // fenêtre = l'étalement complet des marches. Rangé par marche.
+  // Temps BRUTS, non optimisés (mode "same time") : tout le monde tire en même
+  // temps, donc on n'affiche pas de "Fire @". Rangé par marche CROISSANTE :
+  // la plus COURTE (la plus rapide) en haut -> la plus LONGUE en bas.
   function rawList(participants) {
     var rows = (participants || []).map(function (p, idx) {
       return { p: p, idx: idx, t: toSeconds(p.march) };
     }).filter(function (r) { return r.t != null; });
-    rows.sort(function (a, b) { return b.t - a.t || a.idx - b.idx; });
+    rows.sort(function (a, b) { return a.t - b.t || b.idx - a.idx; });
     return rows.map(function (r) {
       return {
         idx: r.idx,
