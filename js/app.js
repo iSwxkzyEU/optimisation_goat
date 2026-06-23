@@ -1078,7 +1078,9 @@
       '<div class="modal-head"><h3>' + title + '</h3><button class="x" data-close>✕</button></div>' +
       villageFields +
       variantSideField +
-      '<label class="lbl">Paste the Discord block or the bot table here:</label>' +
+      '<label class="lbl">' + (variantOnly
+        ? "Paste this plan's block here (optional — you can also add players one by one after):"
+        : "Paste the Discord block or the bot table here:") + "</label>" +
       '<textarea id="raw" class="raw" placeholder="Either:&#10;TARGET : 61667&#10;SIDE : RIGHT&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form&#10;&#10;Or the bot table:&#10;|   94011[fredite]   | army |  x5  | 6m11s |">' +
         esc(raw) + "</textarea>" +
       '<button class="btn" id="preview-btn">' + ic("eye") + ' Parse preview</button>' +
@@ -1126,7 +1128,10 @@
       var keepParticipants = editVariant && rawText === initialRaw;
       var manualTarget = (elVal("target-num") || "").trim();
       var manualSide = elVal("nuke-side");
-      if (!parsed.target && !manualTarget && parsed.participants.length === 0 && !keepParticipants) {
+      // En "ajout de plan", on autorise un plan VIDE (on le remplira ensuite via
+      // "Add a row" ou un bloc colle). Sinon (nouveau village / edition), on
+      // refuse un bloc vide/illisible.
+      if (!variantOnly && !parsed.target && !manualTarget && parsed.participants.length === 0 && !keepParticipants) {
         alert("The block looks empty or malformed. Check the format.");
         return;
       }
