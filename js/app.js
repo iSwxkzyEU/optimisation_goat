@@ -421,7 +421,6 @@
           "<td>" + esc(p.qty) + "</td>" +
           "<td>" + esc(p.march) + "</td>" +
           "<td>" + esc(p.offset) + "</td>" +
-          "<td class='strong impact'>" + esc(p.impact || "") + "</td>" +
           "<td>" + sideCell + "</td>" +
           "<td>" + formCell + "</td>" +
           "<td class='row-action'>" +
@@ -489,7 +488,7 @@
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
               "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th>" +
-              "<th>March</th><th>Fire @</th><th>Lands</th><th>Side</th><th>Formation</th><th></th>" +
+              "<th>March</th><th>Fire @</th><th>Side</th><th>Formation</th><th></th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
             '<button class="btn add-row" id="add-row">' + ic("plus") + " Add a row</button>" +
           "</div>" +
@@ -640,13 +639,10 @@
     }
 
     var rows = res.rows.map(function (r) {
-      // couleur sur "Lands" : rouge si ça tombe trop tôt (négatif), vert si à/après T.
-      var cls = r.impactSec < 0 ? "off-minus" : (r.impactSec > 0 ? "off-plus" : "");
       return "<tr><td>" + esc(r.id) + "</td><td class='strong'>" + esc(r.name) + "</td>" +
         "<td><span class='tag tag-" + esc(r.type) + "'>" + esc(r.type) + "</span></td>" +
         "<td>" + esc(r.qty) + "</td><td>" + esc(r.current) + "</td>" +
         "<td class='strong impact'>" + esc(r.offset) + "</td>" +
-        "<td class='strong " + cls + "'>" + esc(r.newTime) + "</td>" +
         "<td><span class='form-type-badge'>" + esc(r.formation) + "</span></td></tr>";
     }).join("");
 
@@ -658,10 +654,10 @@
         " (max " + res.maxWindow + "s)" +
         (res.impactSpread ? " · impacts spread <b>" + res.impactSpread + "s</b>" : " · <b class=\"ok\">perfectly synced</b>") +
         " · caps +" + res.capGap + "s · sorted by arrival<br>" +
-        '<span class="muted">Fire @ = fire when the group countdown reaches this value · Lands = vs the synced impact T (caps +' + res.capGap + "s)</span></div>" +
+        '<span class="muted">Fire @ = fire when the group countdown reaches this value (caps +' + res.capGap + "s later)</span></div>" +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
         "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
-        "<th>March</th><th>Fire @</th><th>Lands</th><th>Form.</th>" +
+        "<th>March</th><th>Fire @</th><th>Form.</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Close</button>' +
@@ -716,11 +712,11 @@
 
   // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code
   function optimizedAsciiTable(rows) {
-    var headers = ["ID", "Type", "Card", "March", "Fire @", "Lands", "Form"];
+    var headers = ["ID", "Type", "Card", "March", "Fire @", "Form"];
     var data = rows.map(function (r) {
       return [
         (r.id || "?") + "[" + (r.name || "?") + "]",
-        r.type || "", r.qty || "", r.current, r.offset, r.newTime, r.formation || "",
+        r.type || "", r.qty || "", r.current, r.offset, r.formation || "",
       ];
     });
     var widths = headers.map(function (h, i) {
@@ -923,13 +919,12 @@
       return "<tr><td>" + esc(p.id) + "</td><td class='strong'>" + esc(p.name) + "</td>" +
         "<td><span class='tag tag-" + esc(p.type) + "'>" + esc(p.type) + "</span></td>" +
         "<td>" + esc(p.qty) + "</td><td>" + esc(p.march) + "</td><td>" + esc(p.offset) + "</td>" +
-        "<td class='strong impact'>" + esc(p.impact || "") + "</td>" +
         "<td>" + esc(p.formation || "") + "</td></tr>";
     }).join("");
 
     var table = parts.length
       ? '<div class="detail-table-wrap"><table class="ptable small"><thead><tr>' +
-          "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th><th>March</th><th>Fire @</th><th>Lands</th><th>Form.</th>" +
+          "<th>ID</th><th>Player</th><th>Type</th><th>Qty</th><th>March</th><th>Fire @</th><th>Form.</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>"
       : '<p class="muted">No attack detail was recorded for this entry.</p>';
 

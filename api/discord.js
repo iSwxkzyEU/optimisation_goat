@@ -84,6 +84,51 @@ function reply(res, content, ephemeral) {
   });
 }
 
+// Réponse publique qui PING une liste d'utilisateurs. allowed_mentions avec
+// parse:[] => seuls les IDs listés pinguent (jamais @everyone/@here par erreur).
+function replyWithMentions(res, content, userIds) {
+  res.status(200).json({
+    type: REPLY.MESSAGE,
+    data: {
+      content: content,
+      allowed_mentions: { parse: [], users: (userIds || []).slice(0, 100) },
+    },
+  });
+}
+
+// Résout des noms Discord -> mentions <@id> via l'API du serveur (recherche de
+// membres). Nécessite DISCORD_BOT_TOKEN (env) + bot présent dans le serveur.
+// Match EXACT (pseudo serveur, nom global, ou username) pour ne pas pinguer le
+// mauvais membre ; tout nom non résolu retombe en texte "@nom" (pas de ping).
+function resolveMentions(guildId, names) {
+  var token = process.env.DISCORD_BOT_TOKEN;
+  if (!guildId || !token || !names.length) {
+    return Promise.resolve(names.map(function (n) {
+      return { name: n, text: "@" + n, id: null };
+    }));
+  }
+  return Promise.all(names.map(function (name) {
+    var url = "https://discord.com/api/v10/guilds/" + guildId +
+      "/members/search?limit=5&query=" + encodeURIComponent(name);
+    return fetch(url, { headers: { Authorization: "Bot " + token } })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (members) {
+        var lc = name.toLowerCase();
+        var hit = (members || []).find(function (m) {
+          var u = m.user || {};
+          return (m.nick && m.nick.toLowerCase() === lc) ||
+                 (u.global_name && u.global_name.toLowerCase() === lc) ||
+                 (u.username && u.username.toLowerCase() === lc);
+        });
+        var id = hit && hit.user && hit.user.id;
+        return id
+          ? { name: name, text: "<@" + id + ">", id: id }
+          : { name: name, text: "@" + name, id: null };
+      })
+      .catch(function () { return { name: name, text: "@" + name, id: null }; });
+  }));
+}
+
 // Tronque un corps Discord à 2000 caractères en gardant le bloc table.
 function fitDiscord(richHeader, plainHeader, table) {
   var body = richHeader + "\n```ansi\n" + table + "\n```";
@@ -106,7 +151,7 @@ function buildNukeMessage(nuke, village, maxAdj) {
   if (nuke.side) header += " (" + nuke.side + ")";
   header += " · fire window " + result.fireWindow + "s (max " + result.maxWindow + "s)";
   header += result.impactSpread ? " · impacts spread " + result.impactSpread + "s" : " · perfectly synced";
-  header += "\n*Fire @ = fire when the group countdown hits this · Lands = vs synced impact T (caps +" + result.capGap + "s)*";
+  header += "\n*Fire @ = fire when the group countdown hits this (caps +" + result.capGap + "s later)*";
 
   var plain = "**TARGET " + (nuke.target || village) + "** · fire window " + result.fireWindow + "s";
   return fitDiscord(header, plain, table);
@@ -125,37 +170,20 @@ function buildRawMessage(nuke, village) {
 }
 
 // Annonce de tir (en anglais) : récap cible + side, appel des joueurs de la
-// nuke (par nom), tir imminent, demande de mettre "+" si prêt. /launch <id>.
-function buildLaunchMessage(nuke, village) {
+// nuke, tir imminent, demande de mettre "+" si prêt. /launch <id>.
+// `resolved` = sortie de resolveMentions() : [{ name, text:"<@id>"|"@nom", id }].
+function buildLaunchMessage(nuke, village, resolved) {
   var target = nuke.target || village;
-  var names = (nuke.participants || [])
-    .map(function (p) { return (p.name || p.id || "").toString().trim(); })
-    .filter(function (n) { return n; });
+  var head = "🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : "") +
+    "\n🛡️ **Side:** " + (nuke.side || "—");
+  var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.";
 
-  // Le nom du joueur dans le tableau = son nom Discord -> on le @mentionne.
-  var mentions = names.map(function (n) { return "@" + n; }).join(" ");
+  var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
+  var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
+  if (body.length <= 2000) return body;
 
-  var lines = [];
-  lines.push("🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : ""));
-  lines.push("🛡️ **Side:** " + (nuke.side || "—"));
-  lines.push("");
-  lines.push(mentions || "@ everyone in this nuke");
-  lines.push("");
-  lines.push("🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.");
-
-  var body = lines.join("\n");
-  if (body.length > 2000) {
-    // Trop de joueurs pour tenir : on garde l'essentiel sans la liste des @.
-    body = [
-      "🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : ""),
-      "🛡️ **Side:** " + (nuke.side || "—"),
-      "",
-      "@ everyone in this nuke",
-      "",
-      "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.",
-    ].join("\n");
-  }
-  return body;
+  // Trop de joueurs pour tenir : on garde l'essentiel sans la liste des mentions.
+  return head + "\n\n@ everyone in this nuke\n\n" + foot;
 }
 
 function handler(req, res) {
@@ -216,17 +244,24 @@ function handler(req, res) {
               );
               return;
             }
-            // /launch => annonce de tir (récap + appel des joueurs).
+            // /launch => annonce de tir : on résout les noms (= noms Discord)
+            // en mentions <@id> pour PINGER réellement, puis on répond.
+            if (cmd === "launch") {
+              var names = (nuke.participants || [])
+                .map(function (p) { return (p.name || "").toString().trim(); })
+                .filter(function (n) { return n; });
+              return resolveMentions(body.guild_id, names).then(function (resolved) {
+                var ids = resolved
+                  .map(function (r) { return r.id; })
+                  .filter(function (id) { return id; });
+                replyWithMentions(res, buildLaunchMessage(nuke, village, resolved), ids);
+              });
+            }
             // /optimise <id> sans secondes => temps bruts ; sinon optimisé ±seconds.
             // /id => optimisé avec le budget par défaut (±8).
-            var msg;
-            if (cmd === "launch") {
-              msg = buildLaunchMessage(nuke, village);
-            } else if (cmd === "optimise" && seconds == null) {
-              msg = buildRawMessage(nuke, village);
-            } else {
-              msg = buildNukeMessage(nuke, village, cmd === "optimise" ? seconds : undefined);
-            }
+            var msg = (cmd === "optimise" && seconds == null)
+              ? buildRawMessage(nuke, village)
+              : buildNukeMessage(nuke, village, cmd === "optimise" ? seconds : undefined);
             reply(res, msg, false);
           })
           .catch(function () {
