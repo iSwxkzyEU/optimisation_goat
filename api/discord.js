@@ -109,13 +109,7 @@ function buildNukeMessage(nuke, village, maxAdj) {
   header += "\n*Fire @ = fire when the group countdown hits this · Lands = vs synced impact T (caps +" + result.capGap + "s)*";
 
   var plain = "**TARGET " + (nuke.target || village) + "** · fire window " + result.fireWindow + "s";
-  var body = fitDiscord(header, plain, table);
-  // Avertissements éventuels, ajoutés sous le tableau si la place le permet.
-  if (result.warnings.length) {
-    var warn = "\n⚠️ " + result.warnings.join("\n⚠️ ");
-    if (!body.startsWith("⚠️") && (body.length + warn.length) <= 2000) body += warn;
-  }
-  return body;
+  return fitDiscord(header, plain, table);
 }
 
 // Tableau BRUT (non optimisé) : /optimise <id> sans secondes.
@@ -128,6 +122,40 @@ function buildRawMessage(nuke, village) {
   var header = "**TARGET " + (nuke.target || village) + "** · RAW times (not optimized)";
   if (nuke.target_player) header += " — " + nuke.target_player;
   return fitDiscord(header, "**TARGET " + (nuke.target || village) + "** · RAW", table);
+}
+
+// Annonce de tir (en anglais) : récap cible + side, appel des joueurs de la
+// nuke (par nom), tir imminent, demande de mettre "+" si prêt. /launch <id>.
+function buildLaunchMessage(nuke, village) {
+  var target = nuke.target || village;
+  var names = (nuke.participants || [])
+    .map(function (p) { return (p.name || p.id || "").toString().trim(); })
+    .filter(function (n) { return n; });
+
+  // Le nom du joueur dans le tableau = son nom Discord -> on le @mentionne.
+  var mentions = names.map(function (n) { return "@" + n; }).join(" ");
+
+  var lines = [];
+  lines.push("🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : ""));
+  lines.push("🛡️ **Side:** " + (nuke.side || "—"));
+  lines.push("");
+  lines.push(mentions || "@ everyone in this nuke");
+  lines.push("");
+  lines.push("🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.");
+
+  var body = lines.join("\n");
+  if (body.length > 2000) {
+    // Trop de joueurs pour tenir : on garde l'essentiel sans la liste des @.
+    body = [
+      "🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : ""),
+      "🛡️ **Side:** " + (nuke.side || "—"),
+      "",
+      "@ everyone in this nuke",
+      "",
+      "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.",
+    ].join("\n");
+  }
+  return body;
 }
 
 function handler(req, res) {
@@ -161,7 +189,7 @@ function handler(req, res) {
       }
 
       var cmd = body.type === INTERACTION.COMMAND && body.data ? body.data.name : null;
-      if (cmd === "id" || cmd === "optimise") {
+      if (cmd === "id" || cmd === "optimise" || cmd === "launch") {
         var opts = body.data.options || [];
         var villageOpt = opts.find(function (o) { return o.name === "village"; });
         var village = villageOpt ? String(villageOpt.value).trim() : "";
@@ -188,11 +216,17 @@ function handler(req, res) {
               );
               return;
             }
+            // /launch => annonce de tir (récap + appel des joueurs).
             // /optimise <id> sans secondes => temps bruts ; sinon optimisé ±seconds.
             // /id => optimisé avec le budget par défaut (±8).
-            var msg = (cmd === "optimise" && seconds == null)
-              ? buildRawMessage(nuke, village)
-              : buildNukeMessage(nuke, village, cmd === "optimise" ? seconds : undefined);
+            var msg;
+            if (cmd === "launch") {
+              msg = buildLaunchMessage(nuke, village);
+            } else if (cmd === "optimise" && seconds == null) {
+              msg = buildRawMessage(nuke, village);
+            } else {
+              msg = buildNukeMessage(nuke, village, cmd === "optimise" ? seconds : undefined);
+            }
             reply(res, msg, false);
           })
           .catch(function () {

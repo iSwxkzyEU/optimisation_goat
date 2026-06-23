@@ -650,12 +650,6 @@
         "<td><span class='form-type-badge'>" + esc(r.formation) + "</span></td></tr>";
     }).join("");
 
-    var warn = res.warnings.length
-      ? '<div class="opt-warnings">' + res.warnings.map(function (w) {
-          return "<div>" + ic("triangle-alert") + " " + esc(w) + "</div>";
-        }).join("") + "</div>"
-      : "";
-
     openModal(
       '<div class="modal-head"><h3>' + ic("timer") + ' Synchronized impact times</h3>' +
         '<button class="x" data-close>✕</button></div>' +
@@ -665,7 +659,6 @@
         (res.impactSpread ? " · impacts spread <b>" + res.impactSpread + "s</b>" : " · <b class=\"ok\">perfectly synced</b>") +
         " · caps +" + res.capGap + "s · sorted by arrival<br>" +
         '<span class="muted">Fire @ = fire when the group countdown reaches this value · Lands = vs the synced impact T (caps +' + res.capGap + "s)</span></div>" +
-      warn +
       '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
         "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
         "<th>March</th><th>Fire @</th><th>Lands</th><th>Form.</th>" +

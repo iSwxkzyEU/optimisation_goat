@@ -70,6 +70,18 @@ var commands = [
       },
     ],
   },
+  {
+    name: "launch",
+    description: "Announce an imminent strike and ask players to react + if ready",
+    options: [
+      {
+        type: 3, // STRING
+        name: "village",
+        description: "Targeted village ID (e.g. 41707)",
+        required: true,
+      },
+    ],
+  },
 ];
 
 var url = GUILD_ID
@@ -90,7 +102,7 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commandes /id et /optimise enregistrées " +
+      console.log("✅ Commandes /id, /optimise et /launch enregistrées " +
         (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
       console.log(body);
     });
