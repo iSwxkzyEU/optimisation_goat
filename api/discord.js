@@ -326,26 +326,20 @@ function handleComponent(res, body) {
       if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
       var variants = variantsOf(nuke);
       if (value === "all") {
-        // TOUS les plans dans UN SEUL message (fiable : pas de followups, qui se
-        // perdent quand la lambda Vercel gèle après la réponse). On empile autant
-        // de plans que la limite Discord (2000 car.) le permet.
+        // TOUS les plans : un message PAR plan (avec couleur). Le 1ᵉʳ part en
+        // réponse, les suivants en followups maintenus en vie par waitUntil
+        // (sinon la lambda Vercel gèle après la réponse et les perd).
         var msgs = variants.map(function (v, i) {
-          return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length), plain: true });
+          return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length) });
         });
-        var combined = "";
-        var shown = 0;
-        for (var k = 0; k < msgs.length; k++) {
-          var next = combined ? combined + "\n\n" + msgs[k] : msgs[k];
-          if (next.length > 2000) break;
-          combined = next; shown++;
-        }
-        if (!combined) { combined = msgs[0]; shown = 1; } // garde-fou (1 plan déjà gros)
-        if (shown < msgs.length) {
-          var note = "\n\n*(" + (msgs.length - shown) + " more plan(s) — too long for one message; pick them one by one.)*";
-          if ((combined + note).length <= 2000) combined += note;
-        }
-        respond(res, REPLY.MESSAGE, { content: combined });
-        return;
+        respond(res, REPLY.MESSAGE, { content: msgs[0] });
+        var rest = msgs.slice(1);
+        if (!rest.length) return;
+        var task = rest.reduce(function (chain, m) {
+          return chain.then(function () { return followup(appId, token, m); });
+        }, Promise.resolve());
+        if (vercelWaitUntil(task)) return; // Vercel garde la fonction vivante
+        return task;                       // fallback : on retourne la promesse
       }
       var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
@@ -461,15 +455,30 @@ function buildLaunchPing(row, variant, resolved, tag) {
 
 // Message de suivi (followup) via le webhook de l'interaction (valable 15 min,
 // pas besoin du bot token). Échec silencieux : un followup raté n'a pas à
-// casser la réponse principale déjà envoyée.
+// casser la réponse principale déjà envoyée. User-Agent conforme par sécurité.
 function followup(appId, token, content) {
   if (!appId || !token || !content) return Promise.resolve();
   var url = "https://discord.com/api/v10/webhooks/" + appId + "/" + token;
   return fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "DiscordBot (https://optimisation-goat.vercel.app, 1.0)",
+    },
     body: JSON.stringify({ content: content }),
   }).then(function () {}, function () {});
+}
+
+// Sur Vercel, la fonction peut "geler" juste après la réponse → les followups
+// envoyés ensuite sont perdus. waitUntil prolonge sa vie jusqu'à résolution de
+// la promesse. On lit le contexte natif Vercel (sans dépendance) ; false si absent.
+function vercelWaitUntil(promise) {
+  try {
+    var holder = globalThis[Symbol.for("@vercel/request-context")];
+    var ctx = holder && typeof holder.get === "function" ? holder.get() : null;
+    if (ctx && typeof ctx.waitUntil === "function") { ctx.waitUntil(promise); return true; }
+  } catch (e) { /* contexte indisponible */ }
+  return false;
 }
 
 // Réponse à un /launch_* : récap qui PING + le tableau (mode choisi). Si tout
