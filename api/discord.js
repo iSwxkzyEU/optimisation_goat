@@ -187,19 +187,6 @@ function buildLaunchMessage(nuke, village, resolved) {
 }
 
 function handler(req, res) {
-  // Point de diagnostic (GET) : indique seulement si les variables d'env sont
-  // PRÉSENTES (booléen), jamais leur valeur. Sert à vérifier la config Vercel.
-  if (req.method === "GET") {
-    res.status(200).json({
-      ok: true,
-      env: {
-        DISCORD_BOT_TOKEN: !!process.env.DISCORD_BOT_TOKEN,
-        DISCORD_PUBLIC_KEY: !!process.env.DISCORD_PUBLIC_KEY,
-        SUPABASE_URL: !!process.env.SUPABASE_URL,
-      },
-    });
-    return;
-  }
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
     return;
