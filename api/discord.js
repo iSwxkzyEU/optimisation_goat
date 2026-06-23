@@ -176,7 +176,8 @@ function buildLaunchMessage(nuke, village, resolved) {
   var target = nuke.target || village;
   var head = "🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : "") +
     "\n🛡️ **Side:** " + (nuke.side || "—");
-  var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.";
+  var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready." +
+    "\nhttps://media.giphy.com/media/zK5EHMbtwfW1O/giphy.gif";
 
   var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
   var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
