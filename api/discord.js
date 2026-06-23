@@ -541,10 +541,15 @@ function handler(req, res) {
         launch_syncro: "syncro", launch_same_time: "raw",
       };
 
-      // /id_syncro | /id_same_time => menu catégorie -> village -> plan -> tableau.
+      // /id_syncro | /id_same_time => navigation ÉPHÉMÈRE (toi seul la vois) :
+      // catégorie -> village -> plan ; le tableau choisi, lui, est PUBLIC.
       if (cmd === "id_syncro" || cmd === "id_same_time") {
         return fetchCategories()
-          .then(function (cats) { respond(res, REPLY.MESSAGE, categoryMenuData(cats, MODE[cmd])); })
+          .then(function (cats) {
+            var data = categoryMenuData(cats, MODE[cmd]);
+            data.flags = EPHEMERAL; // menu privé ; tu publies en choisissant un plan
+            respond(res, REPLY.MESSAGE, data);
+          })
           .catch(function () { dbError(res); });
       }
 
