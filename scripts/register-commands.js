@@ -36,12 +36,21 @@ if (!APP_ID || !BOT_TOKEN) {
   process.exit(1);
 }
 
-// Argument "village" partagé par les commandes /launch_* et /optimise.
+// Argument "village" (requis) pour /optimise.
 var villageOption = {
   type: 3, // STRING
   name: "village",
   description: "Targeted village ID (e.g. 41707)",
   required: true,
+};
+
+// Argument "village" OPTIONNEL pour /launch_* : vide => menu de recherche
+// (catégorie -> village -> plan), sinon tir direct sur cet ID.
+var villageOptionLaunch = {
+  type: 3, // STRING
+  name: "village",
+  description: "Village ID (optional — leave empty to browse by category)",
+  required: false,
 };
 
 // PUT groupé : la liste ci-dessous REMPLACE toutes les commandes existantes.
@@ -57,16 +66,16 @@ var commands = [
     description: "Browse a village and show its SAME-TIME (raw) launch table",
   },
   {
-    // Annonce de tir : récap + ping + tableau OPTIMISÉ (choix du plan si plusieurs).
+    // Annonce de tir : menu (ou ID direct) + récap + ping + tableau OPTIMISÉ.
     name: "launch_syncro",
     description: "Announce a strike (ping) with the SYNCRO (optimized) table",
-    options: [villageOption],
+    options: [villageOptionLaunch],
   },
   {
-    // Annonce de tir : récap + ping + tableau BRUT.
+    // Annonce de tir : menu (ou ID direct) + récap + ping + tableau BRUT.
     name: "launch_same_time",
     description: "Announce a strike (ping) with the SAME-TIME (raw) table",
-    options: [villageOption],
+    options: [villageOptionLaunch],
   },
   {
     name: "optimise",

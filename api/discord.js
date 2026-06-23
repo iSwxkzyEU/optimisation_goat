@@ -6,9 +6,11 @@
      /id_syncro                     : menu catégorie -> village -> plan,
                                       puis tableau OPTIMISÉ (synchro).
      /id_same_time                  : idem mais tableau BRUT (same time).
-     /launch_syncro <village>       : récap + PING des joueurs + tableau
-                                      optimisé (choix du plan si plusieurs).
-     /launch_same_time <village>    : idem mais tableau brut.
+     /launch_syncro [village]       : récap + PING des joueurs + tableau
+                                      optimisé. Sans argument -> même menu de
+                                      recherche que /id_* (catégorie -> village
+                                      -> plan), puis tir. Choix du plan si >1.
+     /launch_same_time [village]    : idem mais tableau brut (same time).
      /optimise <village> [seconds]  : plan principal, optimisé ±seconds ;
                                       sans seconds -> temps BRUTS.
 
@@ -200,8 +202,10 @@ function planDesc(v) {
   return ((v.side ? v.side + " · " : "") + (v.participants || []).length + " players").slice(0, 100);
 }
 
-// 1ʳᵉ étape (/id_*) : choisir une catégorie. mode = "syncro" | "raw".
-function categoryMenuData(categories, mode) {
+// 1ʳᵉ étape (/id_* ou /launch_*) : choisir une catégorie. mode = "syncro"|"raw".
+// kind = préfixe du custom_id : "idc" (affiche un tableau) ou "lc" (lance/ping).
+function categoryMenuData(categories, mode, kind) {
+  kind = kind || "idc";
   if (!categories || !categories.length) {
     return { content: "No categories yet. Create them on the site first." };
   }
@@ -210,12 +214,13 @@ function categoryMenuData(categories, mode) {
   });
   return {
     content: "**Pick a category** to see its villages:",
-    components: [row(selectMenu("idc:" + mode, "Choose a category", options))],
+    components: [row(selectMenu(kind + ":" + mode, "Choose a category", options))],
   };
 }
 
-// 2ᵉ étape : choisir un village dans la catégorie.
-function villageMenuData(categoryName, nukes, mode) {
+// 2ᵉ étape : choisir un village. kind = "idn" (tableau) ou "ln" (lance/ping).
+function villageMenuData(categoryName, nukes, mode, kind) {
+  kind = kind || "idn";
   if (!nukes || !nukes.length) {
     return { content: "No nukes in **" + categoryName + "** yet.", components: [] };
   }
@@ -229,7 +234,7 @@ function villageMenuData(categoryName, nukes, mode) {
   });
   var content = "**" + categoryName + "** — choose a village:";
   if (nukes.length > 25) content += "\n*(showing first 25 of " + nukes.length + ")*";
-  return { content: content, components: [row(selectMenu("idn:" + mode, "Choose a village", options))] };
+  return { content: content, components: [row(selectMenu(kind + ":" + mode, "Choose a village", options))] };
 }
 
 // 3ᵉ étape (si >1 plan) : choisir un plan, ou TOUS pour tout afficher.
@@ -246,7 +251,8 @@ function variantMenuData(nuke, variants, mode) {
 }
 
 // /launch_* avec plusieurs plans : choisir LE plan à lancer (pas de "tous").
-// Menu éphémère (visible par toi seul) ; le ping final, lui, est public.
+// Pas de flag ici : éphémère posé par l'appelant (réponse initiale) ou hérité
+// du message éphémère quand on l'affiche via UPDATE (le ping final reste public).
 function launchVariantMenuData(nuke, variants, mode) {
   var options = variants.slice(0, 25).map(function (v, i) {
     return { label: planName(v, i).slice(0, 100), value: String(i), description: planDesc(v) };
@@ -255,7 +261,6 @@ function launchVariantMenuData(nuke, variants, mode) {
     content: "**TARGET " + (nuke.target || "?") + "** has " + variants.length +
       " plans — which one do you launch?",
     components: [row(selectMenu("lv:" + mode + ":" + nuke.id, "Choose the plan to launch", options))],
-    flags: EPHEMERAL,
   };
 }
 
@@ -316,6 +321,33 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
+  // [LAUNCH] Catégorie → liste des villages (on édite le menu éphémère).
+  if (kind === "lc") {
+    return Promise.all([fetchCategories(), fetchNukesByCategory(value)])
+      .then(function (arr) {
+        var cats = arr[0] || [], nukes = arr[1] || [];
+        var cat = cats.find(function (c) { return String(c.id) === String(value); });
+        respond(res, REPLY.UPDATE, villageMenuData(cat ? cat.name : "Category", nukes, mode, "ln"));
+      })
+      .catch(function () { dbError(res); });
+  }
+
+  // [LAUNCH] Village → ping direct (1 plan) ou menu de plan (>1).
+  if (kind === "ln") {
+    return fetchNukeById(value).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      if (variants.length > 1) {
+        respond(res, REPLY.UPDATE, launchVariantMenuData(nuke, variants, mode));
+        return;
+      }
+      var v = variants[0];
+      return resolveMentions(body.guild_id, participantNames(v)).then(function (resolved) {
+        return launchResponse(res, appId, token, nuke, v, mode, resolved, "");
+      });
+    }).catch(function () { dbError(res); });
+  }
+
   // Plan à lancer (/launch_* multi-plans) → ping public + tableau.
   if (kind === "lv") {
     return fetchNukeById(parts[2]).then(function (nuke) {
@@ -359,8 +391,9 @@ function variantTableMessage(row, variant, mode, opts) {
     if (!rawRows.length) return emptyTableMsg(target);
     var rawHeader = "**TARGET " + target + "**" +
       (row.target_player ? " — " + row.target_player : "") +
-      (side ? " (" + side + ")" : "") + tag + " · RAW times (not optimized)";
-    return fitDiscord(rawHeader, "**TARGET " + target + "** · RAW", renderTable(rawRows));
+      (side ? " (" + side + ")" : "") + tag + " · SAME TIME — everyone fires together (not optimized)";
+    // Pas de colonne "Fire @" : tout le monde tire en même temps.
+    return fitDiscord(rawHeader, "**TARGET " + target + "** · SAME TIME", renderTable(rawRows, { hideFire: true }));
   }
 
   var result = optimizer.optimize(participants, opts.maxAdj);
@@ -476,9 +509,13 @@ function handler(req, res) {
         var lopts = body.data.options || [];
         var lvOpt = lopts.find(function (o) { return o.name === "village"; });
         var lvillage = lvOpt ? String(lvOpt.value).trim() : "";
+        // Sans argument => menu de recherche (éphémère) : catégorie -> village -> ping.
         if (!lvillage) {
-          reply(res, "Please provide a village ID, e.g. `/" + cmd + " 41707`.", true);
-          return;
+          return fetchCategories().then(function (cats) {
+            var data = categoryMenuData(cats, lmode, "lc");
+            data.flags = EPHEMERAL;
+            respond(res, REPLY.MESSAGE, data);
+          }).catch(function () { dbError(res); });
         }
         return fetchNukeByTarget(lvillage).then(function (nuke) {
           if (!nuke) {
@@ -488,7 +525,9 @@ function handler(req, res) {
           }
           var variants = variantsOf(nuke);
           if (variants.length > 1) {
-            respond(res, REPLY.MESSAGE, launchVariantMenuData(nuke, variants, lmode));
+            var menu = launchVariantMenuData(nuke, variants, lmode);
+            menu.flags = EPHEMERAL; // réponse initiale : menu visible par toi seul
+            respond(res, REPLY.MESSAGE, menu);
             return;
           }
           var v = variants[0];
