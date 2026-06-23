@@ -197,9 +197,30 @@ function dbError(res) {
   reply(res, "⚠️ Could not reach the database. Please try again.", true);
 }
 
-// Une "description" courte de plan pour les menus (side · N players).
+// Description d'un plan sous l'option du menu : la liste des joueurs (noms),
+// précédée du side. Limitée à 100 car. (limite Discord) : si ça déborde, on
+// coupe et on ajoute "+N" pour les joueurs non listés.
 function planDesc(v) {
-  return ((v.side ? v.side + " · " : "") + (v.participants || []).length + " players").slice(0, 100);
+  var prefix = v.side ? v.side + " · " : "";
+  var names = (v.participants || [])
+    .map(function (p) { return (p.name || p.id || "?").toString().trim(); })
+    .filter(function (n) { return n; });
+  if (!names.length) return (prefix + "no players").slice(0, 100);
+
+  var full = prefix + names.join(", ");
+  if (full.length <= 100) return full;
+
+  // Trop long : on empile les noms tant que ça tient (en gardant la place pour "+N").
+  var out = prefix, count = 0;
+  for (var i = 0; i < names.length; i++) {
+    var piece = (count ? ", " : "") + names[i];
+    var moreTag = " +" + (names.length - count - 1);
+    if ((out + piece + moreTag).length > 100) break;
+    out += piece; count++;
+  }
+  if (count === 0) return (prefix + names[0]).slice(0, 99) + "…"; // 1er nom déjà trop long
+  if (count < names.length) out += " +" + (names.length - count);
+  return out.slice(0, 100);
 }
 
 // 1ʳᵉ étape (/id_* ou /launch_*) : choisir une catégorie. mode = "syncro"|"raw".
@@ -299,19 +320,32 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
-  // Plan choisi (ou TOUS) → tableau(x). "all" : 1ᵉʳ en réponse, le reste en followup.
+  // Plan choisi (ou TOUS) → tableau(x).
   if (kind === "idv") {
     return fetchNukeById(parts[2]).then(function (nuke) {
       if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
       var variants = variantsOf(nuke);
       if (value === "all") {
+        // TOUS les plans dans UN SEUL message (fiable : pas de followups, qui se
+        // perdent quand la lambda Vercel gèle après la réponse). On empile autant
+        // de plans que la limite Discord (2000 car.) le permet.
         var msgs = variants.map(function (v, i) {
           return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length) });
         });
-        respond(res, REPLY.MESSAGE, { content: msgs[0] });
-        return msgs.slice(1).reduce(function (chain, m) {
-          return chain.then(function () { return followup(appId, token, m); });
-        }, Promise.resolve());
+        var combined = "";
+        var shown = 0;
+        for (var k = 0; k < msgs.length; k++) {
+          var next = combined ? combined + "\n\n" + msgs[k] : msgs[k];
+          if (next.length > 2000) break;
+          combined = next; shown++;
+        }
+        if (!combined) { combined = msgs[0]; shown = 1; } // garde-fou (1 plan déjà gros)
+        if (shown < msgs.length) {
+          var note = "\n\n*(" + (msgs.length - shown) + " more plan(s) — too long for one message; pick them one by one.)*";
+          if ((combined + note).length <= 2000) combined += note;
+        }
+        respond(res, REPLY.MESSAGE, { content: combined });
+        return;
       }
       var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
