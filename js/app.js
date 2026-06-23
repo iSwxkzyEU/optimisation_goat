@@ -103,6 +103,7 @@
   var current = "home";
   var currentParam = null;
   var homeFilter = ""; // filtre "joueur visé" sur la liste des nukes (persistant)
+  var activeVar = 0;   // onglet (variante/plan) actif dans la fiche d'une nuke
 
   function route(name, param) {
     current = name;
@@ -173,21 +174,31 @@
 
   /* ---------- Vue : Accueil (cards) ------------------------------------ */
 
+  // Nom affiché d'une variante/plan : son label si renseigné, sinon "Plan N".
+  function variantName(v, i) {
+    return (v && v.label) ? v.label : "Plan " + (i + 1);
+  }
+
   // Recherche libre sur une nuke : cible (village visé), joueur ennemi,
-  // et villages participants (id + nom). q est déjà en minuscules + trim.
+  // et villages participants (id + nom) de TOUTES les variantes. q est déjà
+  // en minuscules + trim.
   function nukeMatches(n, q) {
     if ((n.target || "").toLowerCase().indexOf(q) !== -1) return true;
     if ((n.targetPlayer || "").toLowerCase().indexOf(q) !== -1) return true;
-    return (n.participants || []).some(function (p) {
-      return (
-        (p.id || "").toLowerCase().indexOf(q) !== -1 ||
-        (p.name || "").toLowerCase().indexOf(q) !== -1
-      );
+    return (n.variants || []).some(function (v) {
+      return (v.participants || []).some(function (p) {
+        return (
+          (p.id || "").toLowerCase().indexOf(q) !== -1 ||
+          (p.name || "").toLowerCase().indexOf(q) !== -1
+        );
+      });
     });
   }
 
   function cardHtml(n) {
-    var sideClass = "side-" + (n.side || "").toLowerCase();
+    var v0 = (n.variants && n.variants[0]) || {};
+    var nbVariants = (n.variants || []).length;
+    var sideClass = "side-" + (v0.side || "").toLowerCase();
     var starOn = n.priority ? " on" : "";
     return (
       '<div class="card" data-nuke="' + n.id + '">' +
@@ -200,10 +211,11 @@
             ? '<span class="card-player">' + ic("user") + " " + esc(n.targetPlayer) + "</span>"
             : "") +
         "</div>" +
-        '<div class="card-side ' + sideClass + '">' + esc(n.side || "—") + "</div>" +
+        '<div class="card-side ' + sideClass + '">' + esc(v0.side || "—") + "</div>" +
         '<div class="card-meta">' +
-          "<span>" + ic("users") + " " + n.participants.length + " players</span>" +
-          (n.firstLaunch ? "<span>" + ic("rocket") + " " + esc(n.firstLaunch) + "</span>" : "") +
+          "<span>" + ic("users") + " " + (v0.participants || []).length + " players</span>" +
+          (nbVariants > 1 ? "<span>" + ic("layers") + " " + nbVariants + " plans</span>" : "") +
+          (v0.firstLaunch ? "<span>" + ic("rocket") + " " + esc(v0.firstLaunch) + "</span>" : "") +
         "</div>" +
       "</div>"
     );
@@ -310,6 +322,7 @@
     box.querySelectorAll(".card").forEach(function (c) {
       c.onclick = function (e) {
         if (e.target.closest("[data-star]")) return;
+        activeVar = 0; // on ouvre une fiche sur son 1ᵉʳ plan
         route("nuke", c.dataset.nuke);
       };
     });
@@ -391,9 +404,15 @@
     var n = Store.getNuke(id);
     if (!n) { route("home"); return; }
 
-    var rows = n.participants.map(function (p, idx) {
-      // Côté du joueur : le sien s'il a été personnalisé, sinon celui de la nuke
-      var pSide = p.side || n.side;
+    // Variante (plan) active : on borne l'index au cas où un plan a été supprimé.
+    if (!n.variants || !n.variants.length) n.variants = [{ side: "", spread: "", participants: [], firstLaunch: "", raw: "" }];
+    var vi = activeVar < 0 ? 0 : Math.min(activeVar, n.variants.length - 1);
+    activeVar = vi;
+    var v = n.variants[vi];
+
+    var rows = v.participants.map(function (p, idx) {
+      // Côté du joueur : le sien s'il a été personnalisé, sinon celui du plan
+      var pSide = p.side || v.side;
       // Cellule formation : lien direct vers le fichier .cas (côté + type)
       var ft = formTypeOf(p.formation);
       var files = ft ? Store.getFormations(pSide, ft) : [];
@@ -409,7 +428,7 @@
       }
       var sideCell = p.side
         ? "<span class='pill small-pill side-" + esc(p.side.toLowerCase()) + "'>" + esc(p.side) + "</span>"
-        : "<span class='muted small'>" + esc(n.side || "—") + "</span>";
+        : "<span class='muted small'>" + esc(v.side || "—") + "</span>";
       var manualMark = p.manual
         ? ' <span class="manual-dot" title="Added manually">' + ic("user-plus") + "</span>"
         : "";
@@ -433,7 +452,7 @@
       );
     }).join("");
 
-    var sideForms = Store.getFormations(n.side) || {};
+    var sideForms = Store.getFormations(v.side) || {};
     var anyFile = Store.FORM_TYPES.some(function (t) {
       return (sideForms[t] || []).length;
     });
@@ -449,12 +468,27 @@
           return '<div class="form-type-row"><span class="form-type-badge">' + esc(t) +
             "</span>" + '<div class="file-list">' + chips + "</div></div>";
         }).join("")
-      : '<span class="muted">No files for the ' + esc(n.side || "?") +
+      : '<span class="muted">No files for the ' + esc(v.side || "?") +
         ' side. Add them in the <b>Formations</b> tab.</span>';
 
     var img = n.targetImage
       ? '<img class="target-img" src="' + n.targetImage + '" alt="target castle" data-zoom="' + n.targetImage + '">'
       : '<div class="target-img placeholder">No screenshot</div>';
+
+    // Barre d'onglets (plans) : un onglet par variante + bouton "ajouter".
+    var multi = n.variants.length > 1;
+    var tabs = n.variants.map(function (vv, i) {
+      return '<button class="vtab' + (i === vi ? " active" : "") + '" data-vtab="' + i + '">' +
+        ic("layers") + " " + esc(variantName(vv, i)) + "</button>";
+    }).join("");
+    var variantTabs =
+      '<div class="variant-tabs">' + tabs +
+        '<button class="vtab add" id="add-variant" title="Add another plan for this village">' +
+          ic("plus") + " Plan</button>" +
+        '<span class="vtab-spacer"></span>' +
+        '<button class="vtab-act" id="rename-variant" title="Rename this plan">' + ic("pencil") + "</button>" +
+        (multi ? '<button class="vtab-act danger" id="del-variant" title="Delete this plan">' + ic("trash-2") + "</button>" : "") +
+      "</div>";
 
     el.view.innerHTML =
       '<button class="btn ghost" id="back">' + ic("arrow-left") + ' Back</button>' +
@@ -466,8 +500,10 @@
               ? "<div class='detail-player'>" + ic("user") + " " + esc(n.targetPlayer) + "</div>"
               : "") +
             "<div class='detail-sub'>" +
-              "<span class='side-" + esc((n.side||"").toLowerCase()) + " pill'>" + esc(n.side || "—") + "</span>" +
-              "<span class='muted'>SPREAD : " + esc(n.spread || "—") + "</span>" +
+              "<span class='side-" + esc((v.side||"").toLowerCase()) + " pill'>" + esc(v.side || "—") + "</span>" +
+              "<span class='muted'>SPREAD : " + esc(v.spread || "—") + "</span>" +
+              (multi ? "<span class='muted'>" + ic("layers") + " " + esc(variantName(v, vi)) +
+                " · " + n.variants.length + " plans</span>" : "") +
             "</div>" +
           "</div>" +
           "<div class='detail-actions'>" +
@@ -484,6 +520,8 @@
           "</div>" +
         "</div>" +
 
+        variantTabs +
+
         '<div class="detail-grid">' +
           '<div class="detail-table-wrap">' +
             '<table class="ptable"><thead><tr>' +
@@ -498,38 +536,62 @@
         "</div>" +
 
         '<div class="formations-box">' +
-          "<h4>" + ic("paperclip") + " Formations (" + esc(n.side || "?") + ") — loaded automatically</h4>" +
+          "<h4>" + ic("paperclip") + " Formations (" + esc(v.side || "?") + ") — loaded automatically</h4>" +
           '<div class="file-list">' + formationFiles + "</div>" +
         "</div>" +
       "</div>";
 
     document.getElementById("back").onclick = function () { route("home"); };
-    document.getElementById("edit-nuke").onclick = function () { openNukeForm(n); };
+    document.getElementById("edit-nuke").onclick = function () { openNukeForm(n, null, { varIndex: vi }); };
     document.getElementById("del-nuke").onclick = function () {
-      if (confirm("Delete this nuke?")) {
+      if (confirm("Delete this whole village (all its plans)?")) {
         Store.deleteNuke(n.id).then(function () { route("home"); }).catch(showErr);
       }
     };
-    document.getElementById("add-row").onclick = function () { openParticipantForm(n); };
+    document.getElementById("add-row").onclick = function () { openParticipantForm(n, v); };
     document.getElementById("toggle-prio").onclick = function () {
       n.priority = !n.priority;
       Store.saveNuke(n).then(function () { renderNukeDetail(n.id); renderSidebar(); }).catch(showErr);
     };
-    document.getElementById("optimize-nuke").onclick = function () { openOptimizeModal(n); };
-    document.getElementById("nuke-success").onclick = function () { recordResult(n, "success"); };
-    document.getElementById("nuke-fail").onclick = function () { recordResult(n, "fail"); };
+    document.getElementById("optimize-nuke").onclick = function () { openOptimizeModal(n, v); };
+    document.getElementById("nuke-success").onclick = function () { recordResult(n, v, "success"); };
+    document.getElementById("nuke-fail").onclick = function () { recordResult(n, v, "fail"); };
+
+    // Onglets (plans) : changer de variante / ajouter / renommer / supprimer
+    el.view.querySelectorAll("[data-vtab]").forEach(function (b) {
+      b.onclick = function () { activeVar = parseInt(b.dataset.vtab, 10); renderNukeDetail(n.id); };
+    });
+    document.getElementById("add-variant").onclick = function () {
+      openNukeForm(n, null, { varIndex: n.variants.length, variantOnly: true });
+    };
+    document.getElementById("rename-variant").onclick = function () {
+      openTextPrompt("Rename plan", "Plan name", v.label || "", "Rename", "e.g. Plan B, fast wave",
+        function (name, onErr) {
+          v.label = name;
+          Store.saveNuke(n).then(function () { closeModal(); renderNukeDetail(n.id); }).catch(onErr);
+        });
+    };
+    var delVar = document.getElementById("del-variant");
+    if (delVar) delVar.onclick = function () {
+      if (confirm("Delete the plan “" + variantName(v, vi) + "”? The other plans stay.")) {
+        n.variants.splice(vi, 1);
+        if (activeVar >= n.variants.length) activeVar = n.variants.length - 1;
+        Store.saveNuke(n).then(function () { renderNukeDetail(n.id); }).catch(showErr);
+      }
+    };
+
     el.view.querySelectorAll("[data-edit-row]").forEach(function (b) {
       b.onclick = function () {
-        openParticipantForm(n, parseInt(b.dataset.editRow, 10));
+        openParticipantForm(n, v, parseInt(b.dataset.editRow, 10));
       };
     });
     el.view.querySelectorAll("[data-del-row]").forEach(function (b) {
       b.onclick = function () {
         var idx = parseInt(b.dataset.delRow, 10);
-        var who = n.participants[idx] ? (n.participants[idx].name || "this row") : "this row";
-        if (confirm("Remove " + who + " from the nuke?")) {
-          n.participants.splice(idx, 1);
-          n.firstLaunch = computeFirstLaunch(n.participants);
+        var who = v.participants[idx] ? (v.participants[idx].name || "this row") : "this row";
+        if (confirm("Remove " + who + " from the plan?")) {
+          v.participants.splice(idx, 1);
+          v.firstLaunch = computeFirstLaunch(v.participants);
           Store.saveNuke(n).then(function () { renderNukeDetail(n.id); }).catch(showErr);
         }
       };
@@ -551,10 +613,10 @@
 
   /* ---------- Formulaire : ajouter / éditer une ligne de joueur -------- */
 
-  // editIdx absent → ajout d'une ligne ; présent → édition de la ligne idx
-  function openParticipantForm(nuke, editIdx) {
+  // variant = le plan ciblé. editIdx absent → ajout d'une ligne ; présent → édition.
+  function openParticipantForm(nuke, variant, editIdx) {
     var editing = editIdx != null;
-    var p = editing ? nuke.participants[editIdx] : null;
+    var p = editing ? variant.participants[editIdx] : null;
     if (editing && !p) return;
 
     var typeOpts = ["army", "cap"].map(function (t) {
@@ -564,8 +626,8 @@
     var formOpts = Store.FORM_TYPES.map(function (t) {
       return '<option value="' + t + '">';
     }).join("");
-    // Côté personnel : vide = celui de la nuke
-    var sideOpts = '<option value="">Nuke side (' + esc(nuke.side || "—") + ")</option>" +
+    // Côté personnel : vide = celui du plan
+    var sideOpts = '<option value="">Plan side (' + esc(variant.side || "—") + ")</option>" +
       SIDES.map(function (s) {
         var sel = p && p.side === s ? " selected" : "";
         return '<option value="' + s + '"' + sel + ">" + s + "</option>";
@@ -604,7 +666,7 @@
         qty: val("pf-qty"),
         march: val("pf-march"),
         offset: val("pf-offset"),
-        side: val("pf-side"), // vide = côté de la nuke
+        side: val("pf-side"), // vide = côté du plan
         formation: val("pf-form"),
       };
       if (editing) {
@@ -612,9 +674,9 @@
         Object.keys(data).forEach(function (k) { p[k] = data[k]; });
       } else {
         data.manual = true;
-        nuke.participants.push(data);
+        variant.participants.push(data);
       }
-      nuke.firstLaunch = computeFirstLaunch(nuke.participants);
+      variant.firstLaunch = computeFirstLaunch(variant.participants);
       var btn = document.getElementById("pf-save");
       btn.disabled = true;
       btn.textContent = "Saving…";
@@ -631,8 +693,8 @@
 
   /* ---------- Optimisation des temps d'impact --------------------------- */
 
-  function openOptimizeModal(n) {
-    var res = NukeOptimizer.optimize(n.participants);
+  function openOptimizeModal(n, variant) {
+    var res = NukeOptimizer.optimize(variant.participants);
     if (!res.rows.length) {
       alert("No readable march times (e.g. 6m11s) to optimize.");
       return;
@@ -678,7 +740,7 @@
 
     document.getElementById("opt-apply").onclick = function () {
       res.rows.forEach(function (r) {
-        var p = n.participants[r.idx];
+        var p = variant.participants[r.idx];
         if (!p) return;
         p.offset = r.offset;
         p.impact = r.newTime;
@@ -689,13 +751,13 @@
       var used = {};
       var ordered = res.rows.map(function (r) {
         used[r.idx] = true;
-        return n.participants[r.idx];
+        return variant.participants[r.idx];
       }).filter(Boolean);
-      n.participants.forEach(function (p, i) {
+      variant.participants.forEach(function (p, i) {
         if (!used[i]) ordered.push(p);
       });
-      n.participants = ordered;
-      n.spread = res.spreadAfter + " seconds";
+      variant.participants = ordered;
+      variant.spread = res.spreadAfter + " seconds";
       var btn = document.getElementById("opt-apply");
       btn.disabled = true;
       btn.textContent = "Applying…";
@@ -747,7 +809,7 @@
 
   /* ---------- Résultat d'une nuke (Success / Fail) ---------------------- */
 
-  function recordResult(n, result) {
+  function recordResult(n, variant, result) {
     if (!Store.isHistoryAvailable()) {
       alert("History is not set up yet.\n\nRun the updated supabase-setup.sql script " +
         "in Supabase (SQL Editor), then reload the page.");
@@ -755,18 +817,18 @@
     }
     // Un Fail reste dans la liste : simple confirmation.
     if (result === "fail") {
-      if (!confirm("Mark this nuke as a FAIL?\n\nIt will be saved to History and the nuke stays in the list.")) return;
-      Store.addHistoryEntry(n, "fail", {})
+      if (!confirm("Mark this plan as a FAIL?\n\nIt will be saved to History and the village stays in the list.")) return;
+      Store.addHistoryEntry(n, variant, "fail", {})
         .then(function () { renderNukeDetail(n.id); }).catch(showErr);
       return;
     }
     // Un Success demande le nombre d'armées utilisées (suivi dans l'historique).
-    openSuccessModal(n);
+    openSuccessModal(n, variant);
   }
 
   // Modale Success : combien d'armées a-t-il fallu pour réussir ?
-  function openSuccessModal(n) {
-    var def = n.participants.length;
+  function openSuccessModal(n, variant) {
+    var def = (variant.participants || []).length;
     openModal(
       '<div class="modal-head"><h3>' + ic("check") + " Nuke success</h3>" +
         '<button class="x" data-close>✕</button></div>' +
@@ -805,7 +867,7 @@
       var btn = document.getElementById("succ-ok");
       btn.disabled = true;
       btn.textContent = "Saving…";
-      Store.addHistoryEntry(n, "success", { armies: armies, outsideNuke: isOutside }).then(function () {
+      Store.addHistoryEntry(n, variant, "success", { armies: armies, outsideNuke: isOutside }).then(function () {
         return Store.deleteNuke(n.id);
       }).then(function () {
         closeModal();
@@ -953,9 +1015,18 @@
 
   /* ---------- Formulaire création / édition d'une nuke ----------------- */
 
-  function openNukeForm(existing, defaults) {
+  // ctx (optionnel) = { varIndex, variantOnly } :
+  //   - existing null               -> nouveau village (crée la variante 0)
+  //   - existing + varIndex existant -> édite ce plan + les infos du village
+  //   - existing + variantOnly:true  -> ajoute un plan (champs village masqués)
+  function openNukeForm(existing, defaults, ctx) {
     defaults = defaults || {};
-    var raw = existing ? (existing.raw || "") : "";
+    ctx = ctx || {};
+    var variantOnly = !!ctx.variantOnly;
+    var varIndex = ctx.varIndex != null ? ctx.varIndex : 0;
+    var editVariant = existing && existing.variants ? existing.variants[varIndex] : null;
+
+    var raw = editVariant ? (editVariant.raw || "") : "";
     var imgPreview = existing && existing.targetImage
       ? '<img class="mini-preview" src="' + existing.targetImage + '">' : "";
 
@@ -969,20 +1040,21 @@
 
     // Target + Side saisis à la main : indispensables avec le tableau du bot,
     // qui ne contient ni TARGET ni SIDE (priorité sur le bloc collé).
-    var existingSide = existing ? (existing.side || "") : "";
+    // Side appartient au PLAN (variante) ; Target/Player/Category au village.
+    var existingSide = editVariant ? (editVariant.side || "") : "";
     var sideOpts = '<option value="">— From pasted block —</option>' +
       SIDES.map(function (s) {
         return '<option value="' + s + '"' + (s === existingSide ? " selected" : "") + ">" + s + "</option>";
       }).join("");
 
-    openModal(
-      '<div class="modal-head"><h3>' + (existing ? "Edit" : "New") +
-        ' nuke</h3><button class="x" data-close>✕</button></div>' +
+    // En mode "ajout de plan", les champs du village (target/joueur/category/
+    // priorité/image) sont déjà fixés : on ne montre que side + bloc collé.
+    var villageFields = variantOnly ? "" : (
       '<div class="form-cols">' +
         '<div><label class="lbl">Target (castle):</label>' +
         '<input type="text" id="target-num" class="modal-input" placeholder="61667" value="' +
           esc(existing ? (existing.target || "") : "") + '"></div>' +
-        '<div><label class="lbl">Side:</label>' +
+        '<div><label class="lbl">Side (this plan):</label>' +
         '<select id="nuke-side" class="modal-input">' + sideOpts + "</select></div>" +
       "</div>" +
       '<label class="lbl">Targeted player (enemy):</label>' +
@@ -991,14 +1063,29 @@
       '<label class="lbl">Carousel (category):</label>' +
       '<select id="nuke-cat" class="modal-input">' + catOpts + "</select>" +
       '<label class="check-row"><input type="checkbox" id="nuke-prio"' + (isPriority ? " checked" : "") +
-        "> " + ic("star") + " Mark as a priority target (shown on the home page)</label>" +
+        "> " + ic("star") + " Mark as a priority target (shown on the home page)</label>"
+    );
+
+    // En mode "ajout de plan", on garde un sélecteur de Side (propre au plan).
+    var variantSideField = variantOnly ? (
+      '<label class="lbl">Side (this plan):</label>' +
+      '<select id="nuke-side" class="modal-input">' + sideOpts + "</select>"
+    ) : "";
+
+    var title = variantOnly ? "Add a plan" : (existing ? "Edit nuke" : "New nuke");
+
+    openModal(
+      '<div class="modal-head"><h3>' + title + '</h3><button class="x" data-close>✕</button></div>' +
+      villageFields +
+      variantSideField +
       '<label class="lbl">Paste the Discord block or the bot table here:</label>' +
       '<textarea id="raw" class="raw" placeholder="Either:&#10;TARGET : 61667&#10;SIDE : RIGHT&#10;2571 [nickname] | army | x4 | 16m32s | +4s - 90 form&#10;&#10;Or the bot table:&#10;|   94011[fredite]   | army |  x5  | 6m11s |">' +
         esc(raw) + "</textarea>" +
       '<button class="btn" id="preview-btn">' + ic("eye") + ' Parse preview</button>' +
       '<div id="preview" class="preview-zone"></div>' +
-      '<label class="lbl">Target castle screenshot (optional):</label>' +
-      '<input type="file" id="img" accept="image/*"> ' + imgPreview +
+      (variantOnly ? "" :
+        '<label class="lbl">Target castle screenshot (optional):</label>' +
+        '<input type="file" id="img" accept="image/*"> ' + imgPreview) +
       '<div class="modal-foot">' +
         '<button class="btn ghost" data-close>Cancel</button>' +
         '<button class="btn primary" id="save-nuke">Save</button>' +
@@ -1010,12 +1097,15 @@
 
     // Valeur du textarea telle que le navigateur la présente à l'ouverture :
     // c'est LA référence pour savoir si l'utilisateur a modifié le bloc
-    // (comparer à existing.raw échoue à tort : \r\n et \n de tête normalisés)
+    // (comparer à editVariant.raw échoue à tort : \r\n et \n de tête normalisés)
     var initialRaw = document.getElementById("raw").value;
 
-    document.getElementById("img").onchange = function (e) {
+    var imgInput = document.getElementById("img");
+    if (imgInput) imgInput.onchange = function (e) {
       imgFile = e.target.files[0] || null;
     };
+
+    function elVal(id) { var e = document.getElementById(id); return e ? e.value : ""; }
 
     function refreshPreview() {
       if (!document.getElementById("preview").innerHTML &&
@@ -1025,17 +1115,18 @@
     document.getElementById("preview-btn").onclick = refreshPreview;
     // L'aperçu reflète aussi les champs manuels (Target / Side)
     document.getElementById("nuke-side").onchange = refreshPreview;
-    document.getElementById("target-num").oninput = refreshPreview;
+    var targetNum = document.getElementById("target-num");
+    if (targetNum) targetNum.oninput = refreshPreview;
 
     document.getElementById("save-nuke").onclick = function () {
       var rawText = document.getElementById("raw").value;
       var parsed = NukeParser.parseNuke(rawText);
       // Bloc inchangé en édition → on garde les participants existants
       // (lignes ajoutées/retirées à la main, offsets/temps optimisés…)
-      var keepParticipants = existing && rawText === initialRaw;
-      var manualTarget = (document.getElementById("target-num").value || "").trim();
-      var manualSide = document.getElementById("nuke-side").value;
-      if (!parsed.target && !manualTarget && parsed.participants.length === 0) {
+      var keepParticipants = editVariant && rawText === initialRaw;
+      var manualTarget = (elVal("target-num") || "").trim();
+      var manualSide = elVal("nuke-side");
+      if (!parsed.target && !manualTarget && parsed.participants.length === 0 && !keepParticipants) {
         alert("The block looks empty or malformed. Check the format.");
         return;
       }
@@ -1048,29 +1139,45 @@
         ? Store.uploadFile("targets", imgFile)
         : Promise.resolve(existingImage);
 
-      // Joueur visé : saisie manuelle prioritaire, sinon en-tête PLAYER du bloc
-      var manualPlayer = (document.getElementById("target-player").value || "").trim();
-      var targetPlayer = manualPlayer || parsed.targetPlayer || "";
-      var categoryId = document.getElementById("nuke-cat").value || null;
-      var priority = document.getElementById("nuke-prio").checked;
+      // La variante (plan) construite/éditée depuis le formulaire.
+      var newVariant = {
+        label: editVariant ? (editVariant.label || "") : "",
+        side: manualSide || parsed.side,
+        spread: keepParticipants ? editVariant.spread : parsed.spread,
+        participants: keepParticipants ? editVariant.participants : parsed.participants,
+        firstLaunch: keepParticipants ? editVariant.firstLaunch : parsed.firstLaunch,
+        raw: keepParticipants ? (editVariant.raw || "") : parsed.raw,
+      };
+
+      // Les variantes existantes (on remplace celle éditée ou on ajoute la nouvelle).
+      var variants = existing ? existing.variants.slice() : [];
+      var landedIndex = varIndex;
+      if (varIndex < variants.length) variants[varIndex] = newVariant;
+      else { variants.push(newVariant); landedIndex = variants.length - 1; }
 
       imgStep.then(function (imageUrl) {
-        var nuke = {
+        // En "ajout de plan", on ne touche pas aux infos du village.
+        var nuke = variantOnly ? {
+          id: existing.id,
+          target: existing.target,
+          targetPlayer: existing.targetPlayer,
+          categoryId: existing.categoryId,
+          priority: existing.priority,
+          targetImage: existing.targetImage,
+          variants: variants,
+        } : {
           id: existing ? existing.id : null,
           target: manualTarget || parsed.target,
-          targetPlayer: targetPlayer,
-          categoryId: categoryId,
-          priority: priority,
-          side: manualSide || parsed.side,
-          spread: keepParticipants ? existing.spread : parsed.spread,
-          participants: keepParticipants ? existing.participants : parsed.participants,
-          firstLaunch: keepParticipants ? existing.firstLaunch : parsed.firstLaunch,
-          raw: keepParticipants ? (existing.raw || "") : parsed.raw,
+          targetPlayer: (elVal("target-player") || "").trim() || parsed.targetPlayer || "",
+          categoryId: elVal("nuke-cat") || null,
+          priority: !!(document.getElementById("nuke-prio") && document.getElementById("nuke-prio").checked),
           targetImage: imageUrl || null,
+          variants: variants,
         };
         return Store.saveNuke(nuke);
       }).then(function (saved) {
         closeModal();
+        activeVar = landedIndex;       // on atterrit sur le plan créé/édité
         route("nuke", saved.id);
       }).catch(function (e) {
         btn.disabled = false;

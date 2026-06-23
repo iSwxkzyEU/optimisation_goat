@@ -65,6 +65,7 @@
       players: r.players || 0,
       armies: r.armies == null ? null : r.armies,
       outsideNuke: !!r.outside_nuke,
+      variantLabel: r.variant_label || "",
       details: r.details || null,
       firedAt: r.fired_at ? new Date(r.fired_at).getTime() : 0,
     };
@@ -99,6 +100,31 @@
     });
   }
 
+  /* --- Variantes (plans multiples par village) ----------------------- */
+  // Une variante = un PLAN de nuke : son propre side/participants/spread/raw.
+  // Forme normalisée (camelCase) utilisée partout côté front.
+  function normVariant(v) {
+    v = v || {};
+    return {
+      label: v.label || "",
+      side: v.side || "",
+      spread: v.spread || "",
+      participants: v.participants || [],
+      firstLaunch: v.firstLaunch || v.first_launch || "",
+      raw: v.raw || "",
+    };
+  }
+
+  // Liste de variantes d'une ligne : soit la colonne "variants", soit (rétro-
+  // compat) une variante unique reconstruite depuis les colonnes de la ligne.
+  function variantsFromRow(r) {
+    if (Array.isArray(r.variants) && r.variants.length) return r.variants.map(normVariant);
+    return [normVariant({
+      side: r.side, spread: r.spread, participants: r.participants,
+      firstLaunch: r.first_launch, raw: r.raw,
+    })];
+  }
+
   /* --- Conversions ligne <-> objet ---------------------------------- */
   function fromRow(r) {
     return {
@@ -107,27 +133,27 @@
       targetPlayer: r.target_player || "",
       categoryId: r.category_id || null,
       priority: !!r.priority,
-      side: r.side,
-      spread: r.spread,
-      participants: r.participants || [],
-      firstLaunch: r.first_launch || "",
-      raw: r.raw || "",
+      variants: variantsFromRow(r),
       targetImage: r.target_image || null,
       createdAt: r.created_at ? new Date(r.created_at).getTime() : 0,
     };
   }
 
   function toRow(nuke) {
+    var variants = (nuke.variants && nuke.variants.length
+      ? nuke.variants : [normVariant({})]).map(normVariant);
+    var v0 = variants[0]; // miroir rétro-compat : la variante 1 alimente les colonnes de la ligne
     return {
       target: nuke.target || null,
       target_player: nuke.targetPlayer || null,
       category_id: nuke.categoryId || null,
       priority: !!nuke.priority,
-      side: nuke.side || null,
-      spread: nuke.spread || null,
-      participants: nuke.participants || [],
-      first_launch: nuke.firstLaunch || null,
-      raw: nuke.raw || null,
+      variants: variants,
+      side: v0.side || null,
+      spread: v0.spread || null,
+      participants: v0.participants || [],
+      first_launch: v0.firstLaunch || null,
+      raw: v0.raw || null,
       target_image: nuke.targetImage || null,
     };
   }
@@ -211,13 +237,15 @@
 
   function isHistoryAvailable() { return historyAvailable; }
 
-  // Photo de l'attaque conservée dans l'historique (pour le détail consultable)
-  function historyDetails(nuke) {
+  // Photo de l'attaque conservée dans l'historique (pour le détail consultable).
+  // `variant` = le PLAN effectivement tiré (side/participants/spread figés).
+  function historyDetails(nuke, variant) {
+    variant = variant || {};
     return {
-      spread: nuke.spread || "",
-      firstLaunch: nuke.firstLaunch || "",
+      spread: variant.spread || "",
+      firstLaunch: variant.firstLaunch || "",
       targetImage: nuke.targetImage || null,
-      participants: (nuke.participants || []).map(function (p) {
+      participants: (variant.participants || []).map(function (p) {
         return {
           id: p.id || "", name: p.name || "", type: p.type || "", qty: p.qty || "",
           march: p.march || "", offset: p.offset || "", impact: p.impact || "",
@@ -228,20 +256,23 @@
   }
 
   // Enregistre le résultat d'une nuke tirée ("success" ou "fail").
+  // `variant` = le PLAN tiré (sa side / ses participants / son label sont figés).
   // opts = { armies, outsideNuke } :
   //   armies      = nombre d'armées utilisées (null si non pertinent / fail / hors nuke)
   //   outsideNuke = la cible a été rasée hors nuke (le plan n'a pas servi)
-  function addHistoryEntry(nuke, result, opts) {
+  function addHistoryEntry(nuke, variant, result, opts) {
     opts = opts || {};
+    variant = variant || (nuke.variants && nuke.variants[0]) || {};
     var row = {
       target: nuke.target || null,
       target_player: nuke.targetPlayer || null,
-      side: nuke.side || null,
+      side: variant.side || null,
       result: result,
-      players: (nuke.participants || []).length,
+      players: (variant.participants || []).length,
       armies: opts.armies == null ? null : opts.armies,
       outside_nuke: !!opts.outsideNuke,
-      details: historyDetails(nuke),
+      variant_label: variant.label || null,
+      details: historyDetails(nuke, variant),
     };
     return sb.from("nuke_history").insert(row).select().single().then(function (res) {
       if (res.error) throw res.error;

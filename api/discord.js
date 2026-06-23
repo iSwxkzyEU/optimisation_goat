@@ -1,15 +1,27 @@
 /* ============================================================
    BOT DISCORD — endpoint serverless (Vercel).
-   Slash-commands (retrouvent la nuke dont la CIBLE = ce village,
-   même logique que le site via js/optimizer.js) :
-     /id <village>                  : tableau optimisé (budget ±8s)
-     /optimise <village> [seconds]  : optimisé avec un budget ±seconds ;
-                                      sans seconds -> temps BRUTS non optimisés.
+   Même logique de calcul que le site (js/optimizer.js).
+
+   Slash-commands :
+     /id_syncro                     : menu catégorie -> village -> plan,
+                                      puis tableau OPTIMISÉ (synchro).
+     /id_same_time                  : idem mais tableau BRUT (same time).
+     /launch_syncro <village>       : récap + PING des joueurs + tableau
+                                      optimisé (choix du plan si plusieurs).
+     /launch_same_time <village>    : idem mais tableau brut.
+     /optimise <village> [seconds]  : plan principal, optimisé ±seconds ;
+                                      sans seconds -> temps BRUTS.
+
+   "syncro" = temps optimisés (synchronisation des impacts).
+   "same time" = temps bruts, chacun tire à sa marche (pas d'optimisation).
+   Un village peut avoir plusieurs PLANS (variantes) ; le bot propose de
+   choisir le plan 1/2/3… ou "tous" (pour /id_*).
    Si la nuke n'existe pas → message anglais "à créer sur le site".
 
    Discord envoie une requête signée (Ed25519) qu'il FAUT vérifier,
    sinon Discord refuse l'endpoint. On lit le corps BRUT (sans
    toucher req.body, sinon Vercel le consomme) pour la vérif.
+   Les composants (menus) et followups passent par le même endpoint.
    ============================================================ */
 
 "use strict";
@@ -31,8 +43,8 @@ var DISCORD_PUBLIC_KEY =
   "fabb1ef7f21800fb6c766c00db6dc1259fcac647ae6c49711ee993a587afb9ea";
 
 // Types d'interaction / réponse Discord
-var INTERACTION = { PING: 1, COMMAND: 2 };
-var REPLY = { PONG: 1, MESSAGE: 4 };
+var INTERACTION = { PING: 1, COMMAND: 2, COMPONENT: 3 };
+var REPLY = { PONG: 1, MESSAGE: 4, UPDATE: 7 };
 var EPHEMERAL = 64; // message visible seulement par l'utilisateur (flag)
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
@@ -58,41 +70,49 @@ function verifySignature(rawBody, signature, timestamp) {
   }
 }
 
-// Récupère la 1ʳᵉ nuke dont target = village (PostgREST). null si aucune.
-function fetchNukeByTarget(village) {
-  var url =
-    SUPABASE_URL.replace(/\/$/, "") +
-    "/rest/v1/nukes?select=*&limit=1&target=eq." +
-    encodeURIComponent(village);
+// GET PostgREST générique (renvoie le JSON décodé). `path` = ce qui suit /rest/v1/.
+function sbGet(path) {
+  var url = SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/" + path;
   return fetch(url, {
     headers: {
       apikey: SUPABASE_ANON_KEY,
       Authorization: "Bearer " + SUPABASE_ANON_KEY,
     },
-  })
-    .then(function (res) {
-      if (!res.ok) throw new Error("Supabase " + res.status);
-      return res.json();
-    })
+  }).then(function (res) {
+    if (!res.ok) throw new Error("Supabase " + res.status);
+    return res.json();
+  });
+}
+
+// Récupère la 1ʳᵉ nuke dont target = village. null si aucune.
+function fetchNukeByTarget(village) {
+  return sbGet("nukes?select=*&limit=1&target=eq." + encodeURIComponent(village))
     .then(function (rows) { return (rows && rows[0]) || null; });
+}
+
+// Récupère une nuke par son id (clé primaire). null si aucune.
+function fetchNukeById(id) {
+  return sbGet("nukes?select=*&limit=1&id=eq." + encodeURIComponent(id))
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+
+// Liste les catégories (Moldavie, Germany, …) triées par position.
+function fetchCategories() {
+  return sbGet("categories?select=id,name,position&order=position.asc");
+}
+
+// Liste les nukes d'une catégorie (id, target, joueur ciblé), triées par target.
+function fetchNukesByCategory(categoryId) {
+  return sbGet(
+    "nukes?select=id,target,target_player&order=target.asc&category_id=eq." +
+      encodeURIComponent(categoryId)
+  );
 }
 
 function reply(res, content, ephemeral) {
   res.status(200).json({
     type: REPLY.MESSAGE,
     data: { content: content, flags: ephemeral ? EPHEMERAL : 0 },
-  });
-}
-
-// Réponse publique qui PING une liste d'utilisateurs. allowed_mentions avec
-// parse:[] => seuls les IDs listés pinguent (jamais @everyone/@here par erreur).
-function replyWithMentions(res, content, userIds) {
-  res.status(200).json({
-    type: REPLY.MESSAGE,
-    data: {
-      content: content,
-      allowed_mentions: { parse: [], users: (userIds || []).slice(0, 100) },
-    },
   });
 }
 
@@ -129,6 +149,189 @@ function resolveMentions(guildId, names) {
   }));
 }
 
+// --- Composants (menus déroulants) -------------------------------------
+// Répond à Discord avec un type donné (MESSAGE = nouveau message,
+// UPDATE = édite le message du composant cliqué).
+function respond(res, replyType, data) {
+  res.status(200).json({ type: replyType, data: data });
+}
+
+// Action row (type 1) contenant les composants passés en arguments.
+function row() {
+  return { type: 1, components: Array.prototype.slice.call(arguments) };
+}
+
+// Menu déroulant string (type 3). 25 options max côté Discord.
+function selectMenu(customId, placeholder, options) {
+  return { type: 3, custom_id: customId, placeholder: placeholder, options: options };
+}
+
+// --- Variantes (plusieurs PLANS par village) ----------------------------
+// Liste des variantes d'une LIGNE Supabase (snake_case). Rétro-compat : si la
+// colonne "variants" est absente/vide, on reconstruit une variante unique
+// depuis les colonnes de la ligne (side/participants).
+function variantsOf(row) {
+  if (Array.isArray(row.variants) && row.variants.length) {
+    return row.variants.map(function (v) {
+      return { label: v.label || "", side: v.side || "", participants: v.participants || [] };
+    });
+  }
+  return [{ label: "", side: row.side || "", participants: row.participants || [] }];
+}
+
+// Nom d'un plan : son label, sinon "Plan N".
+function planName(v, i) { return (v && v.label) ? v.label : "Plan " + (i + 1); }
+// Étiquette pour l'en-tête d'un tableau : vide s'il n'y a qu'un seul plan.
+function variantTag(v, i, total) { return total > 1 ? planName(v, i) : ""; }
+
+// Pseudos des participants d'un plan (pour les mentions de /launch_*).
+function participantNames(v) {
+  return ((v && v.participants) || [])
+    .map(function (p) { return (p.name || "").toString().trim(); })
+    .filter(function (n) { return n; });
+}
+
+function dbError(res) {
+  reply(res, "⚠️ Could not reach the database. Please try again.", true);
+}
+
+// Une "description" courte de plan pour les menus (side · N players).
+function planDesc(v) {
+  return ((v.side ? v.side + " · " : "") + (v.participants || []).length + " players").slice(0, 100);
+}
+
+// 1ʳᵉ étape (/id_*) : choisir une catégorie. mode = "syncro" | "raw".
+function categoryMenuData(categories, mode) {
+  if (!categories || !categories.length) {
+    return { content: "No categories yet. Create them on the site first." };
+  }
+  var options = categories.slice(0, 25).map(function (c) {
+    return { label: String(c.name).slice(0, 100), value: String(c.id) };
+  });
+  return {
+    content: "**Pick a category** to see its villages:",
+    components: [row(selectMenu("idc:" + mode, "Choose a category", options))],
+  };
+}
+
+// 2ᵉ étape : choisir un village dans la catégorie.
+function villageMenuData(categoryName, nukes, mode) {
+  if (!nukes || !nukes.length) {
+    return { content: "No nukes in **" + categoryName + "** yet.", components: [] };
+  }
+  var options = nukes.slice(0, 25).map(function (n) {
+    var label = n.target_player ? n.target_player + " — " + n.target : String(n.target || n.id);
+    return {
+      label: label.slice(0, 100),
+      value: String(n.id),
+      description: ("Target ID " + (n.target || "?")).slice(0, 100),
+    };
+  });
+  var content = "**" + categoryName + "** — choose a village:";
+  if (nukes.length > 25) content += "\n*(showing first 25 of " + nukes.length + ")*";
+  return { content: content, components: [row(selectMenu("idn:" + mode, "Choose a village", options))] };
+}
+
+// 3ᵉ étape (si >1 plan) : choisir un plan, ou TOUS pour tout afficher.
+function variantMenuData(nuke, variants, mode) {
+  var options = variants.slice(0, 24).map(function (v, i) {
+    return { label: planName(v, i).slice(0, 100), value: String(i), description: planDesc(v) };
+  });
+  options.push({ label: "🌐 All plans", value: "all", description: "Show every plan, one message each" });
+  return {
+    content: "**TARGET " + (nuke.target || "?") + "** has " + variants.length +
+      " plans — choose one (or all):",
+    components: [row(selectMenu("idv:" + mode + ":" + nuke.id, "Choose a plan", options))],
+  };
+}
+
+// /launch_* avec plusieurs plans : choisir LE plan à lancer (pas de "tous").
+// Menu éphémère (visible par toi seul) ; le ping final, lui, est public.
+function launchVariantMenuData(nuke, variants, mode) {
+  var options = variants.slice(0, 25).map(function (v, i) {
+    return { label: planName(v, i).slice(0, 100), value: String(i), description: planDesc(v) };
+  });
+  return {
+    content: "**TARGET " + (nuke.target || "?") + "** has " + variants.length +
+      " plans — which one do you launch?",
+    components: [row(selectMenu("lv:" + mode + ":" + nuke.id, "Choose the plan to launch", options))],
+    flags: EPHEMERAL,
+  };
+}
+
+// Gère un clic sur un menu déroulant (interaction de type COMPONENT).
+// custom_id = "<kind>:<mode>[:<villageId>]". value = sélection.
+function handleComponent(res, body) {
+  var data = body.data || {};
+  var parts = (data.custom_id || "").split(":");
+  var kind = parts[0];
+  var mode = parts[1] === "raw" ? "raw" : "syncro";
+  var value = (data.values || [])[0];
+  var appId = body.application_id;
+  var token = body.token;
+
+  // Catégorie → liste des villages.
+  if (kind === "idc") {
+    return Promise.all([fetchCategories(), fetchNukesByCategory(value)])
+      .then(function (arr) {
+        var cats = arr[0] || [], nukes = arr[1] || [];
+        var cat = cats.find(function (c) { return String(c.id) === String(value); });
+        respond(res, REPLY.UPDATE, villageMenuData(cat ? cat.name : "Category", nukes, mode));
+      })
+      .catch(function () { dbError(res); });
+  }
+
+  // Village → tableau (1 plan) ou menu de plans (>1).
+  if (kind === "idn") {
+    return fetchNukeById(value).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      if (variants.length <= 1) {
+        respond(res, REPLY.MESSAGE, { content: variantTableMessage(nuke, variants[0], mode) });
+        return;
+      }
+      respond(res, REPLY.UPDATE, variantMenuData(nuke, variants, mode));
+    }).catch(function () { dbError(res); });
+  }
+
+  // Plan choisi (ou TOUS) → tableau(x). "all" : 1ᵉʳ en réponse, le reste en followup.
+  if (kind === "idv") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      if (value === "all") {
+        var msgs = variants.map(function (v, i) {
+          return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length) });
+        });
+        respond(res, REPLY.MESSAGE, { content: msgs[0] });
+        return msgs.slice(1).reduce(function (chain, m) {
+          return chain.then(function () { return followup(appId, token, m); });
+        }, Promise.resolve());
+      }
+      var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
+      var v = variants[idx] || variants[0];
+      respond(res, REPLY.MESSAGE, {
+        content: variantTableMessage(nuke, v, mode, { tag: variantTag(v, idx, variants.length) }),
+      });
+    }).catch(function () { dbError(res); });
+  }
+
+  // Plan à lancer (/launch_* multi-plans) → ping public + tableau.
+  if (kind === "lv") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
+      var v = variants[idx] || variants[0];
+      return resolveMentions(body.guild_id, participantNames(v)).then(function (resolved) {
+        return launchResponse(res, appId, token, nuke, v, mode, resolved, variantTag(v, idx, variants.length));
+      });
+    }).catch(function () { dbError(res); });
+  }
+
+  reply(res, "Unknown interaction.", true);
+}
+
 // Tronque un corps Discord à 2000 caractères en gardant le bloc table.
 function fitDiscord(richHeader, plainHeader, table) {
   var body = richHeader + "\n```ansi\n" + table + "\n```";
@@ -138,53 +341,82 @@ function fitDiscord(richHeader, plainHeader, table) {
   return "⚠️ This nuke's table is too large to display here (Discord 2000-char limit). Open it on the site.";
 }
 
-// Tableau OPTIMISÉ. maxAdj = budget ±s (undefined => défaut 8).
-function buildNukeMessage(nuke, village, maxAdj) {
-  var result = optimizer.optimize(nuke.participants || [], maxAdj);
-  if (!result.rows.length) {
-    return "⚠️ Nuke `" + village + "` has no readable participants. Please check it on the site.";
-  }
-  var table = renderTable(result.rows);
+function emptyTableMsg(target) {
+  return "⚠️ Nuke `" + target + "` has no readable participants. Please check it on the site.";
+}
 
-  var header = "**TARGET " + (nuke.target || village) + "**";
-  if (nuke.target_player) header += " — " + nuke.target_player;
-  if (nuke.side) header += " (" + nuke.side + ")";
-  header += " · fire window " + result.fireWindow + "s (max " + result.maxWindow + "s)";
+// Tableau d'un PLAN. mode "syncro" (optimisé) ou "raw" (brut, non optimisé).
+// opts.maxAdj = budget ±s pour /optimise ; opts.tag = libellé du plan ("Plan 2").
+function variantTableMessage(row, variant, mode, opts) {
+  opts = opts || {};
+  var target = row.target || opts.village || "";
+  var participants = (variant && variant.participants) || [];
+  var side = variant && variant.side;
+  var tag = opts.tag ? " · " + opts.tag : "";
+
+  if (mode === "raw") {
+    var rawRows = optimizer.rawList(participants);
+    if (!rawRows.length) return emptyTableMsg(target);
+    var rawHeader = "**TARGET " + target + "**" +
+      (row.target_player ? " — " + row.target_player : "") +
+      (side ? " (" + side + ")" : "") + tag + " · RAW times (not optimized)";
+    return fitDiscord(rawHeader, "**TARGET " + target + "** · RAW", renderTable(rawRows));
+  }
+
+  var result = optimizer.optimize(participants, opts.maxAdj);
+  if (!result.rows.length) return emptyTableMsg(target);
+  var header = "**TARGET " + target + "**" +
+    (row.target_player ? " — " + row.target_player : "") +
+    (side ? " (" + side + ")" : "") + tag +
+    " · fire window " + result.fireWindow + "s (max " + result.maxWindow + "s)";
   header += result.impactSpread ? " · impacts spread " + result.impactSpread + "s" : " · perfectly synced";
   header += "\n*Fire @ = fire when the group countdown hits this (caps +" + result.capGap + "s later)*";
-
-  var plain = "**TARGET " + (nuke.target || village) + "** · fire window " + result.fireWindow + "s";
-  return fitDiscord(header, plain, table);
+  var plain = "**TARGET " + target + "** · fire window " + result.fireWindow + "s";
+  return fitDiscord(header, plain, renderTable(result.rows));
 }
 
-// Tableau BRUT (non optimisé) : /optimise <id> sans secondes.
-function buildRawMessage(nuke, village) {
-  var rows = optimizer.rawList(nuke.participants || []);
-  if (!rows.length) {
-    return "⚠️ Nuke `" + village + "` has no readable participants. Please check it on the site.";
-  }
-  var table = renderTable(rows);
-  var header = "**TARGET " + (nuke.target || village) + "** · RAW times (not optimized)";
-  if (nuke.target_player) header += " — " + nuke.target_player;
-  return fitDiscord(header, "**TARGET " + (nuke.target || village) + "** · RAW", table);
-}
-
-// Annonce de tir (en anglais) : récap cible + side, appel des joueurs de la
-// nuke, tir imminent, demande de mettre "+" si prêt. /launch <id>.
+// Récap de tir (SANS tableau) : cible, side, mentions, GIF. tag = nom du plan.
 // `resolved` = sortie de resolveMentions() : [{ name, text:"<@id>"|"@nom", id }].
-function buildLaunchMessage(nuke, village, resolved) {
-  var target = nuke.target || village;
-  var head = "🎯 **Target:** " + target + (nuke.target_player ? " — " + nuke.target_player : "") +
-    "\n🛡️ **Side:** " + (nuke.side || "—");
+function buildLaunchPing(row, variant, resolved, tag) {
+  var target = row.target || "";
+  var head = "🎯 **Target:** " + target + (row.target_player ? " — " + row.target_player : "") +
+    "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
   var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready." +
     "\nhttps://media.giphy.com/media/zK5EHMbtwfW1O/giphy.gif";
-
   var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
   var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
   if (body.length <= 2000) return body;
-
   // Trop de joueurs pour tenir : on garde l'essentiel sans la liste des mentions.
   return head + "\n\n@ everyone in this nuke\n\n" + foot;
+}
+
+// Message de suivi (followup) via le webhook de l'interaction (valable 15 min,
+// pas besoin du bot token). Échec silencieux : un followup raté n'a pas à
+// casser la réponse principale déjà envoyée.
+function followup(appId, token, content) {
+  if (!appId || !token || !content) return Promise.resolve();
+  var url = "https://discord.com/api/v10/webhooks/" + appId + "/" + token;
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: content }),
+  }).then(function () {}, function () {});
+}
+
+// Réponse à un /launch_* : récap qui PING + le tableau (mode choisi). Si tout
+// tient en 2000 car. → un seul message ; sinon le tableau part en followup.
+function launchResponse(res, appId, token, row, variant, mode, resolved, tag) {
+  var ping = buildLaunchPing(row, variant, resolved, tag);
+  var table = variantTableMessage(row, variant, mode, { tag: tag });
+  var ids = (resolved || []).map(function (r) { return r.id; }).filter(function (id) { return id; });
+  var allowed = { parse: [], users: ids.slice(0, 100) };
+  var combined = ping + "\n" + table;
+  if (combined.length <= 2000) {
+    res.status(200).json({ type: REPLY.MESSAGE, data: { content: combined, allowed_mentions: allowed } });
+    return Promise.resolve();
+  }
+  res.status(200).json({ type: REPLY.MESSAGE, data: { content: ping, allowed_mentions: allowed } });
+  return followup(appId, token, table);
 }
 
 function handler(req, res) {
@@ -193,7 +425,10 @@ function handler(req, res) {
     return;
   }
 
-  readRawBody(req)
+  // On RETOURNE la chaîne : Vercel attend la promesse, donc la fonction reste
+  // vivante jusqu'à ce que les followups (table de /launch_*, "all" de /id_*)
+  // soient envoyés — sinon la lambda peut geler juste après res.json().
+  return readRawBody(req)
     .then(function (rawBody) {
       var signature = req.headers["x-signature-ed25519"];
       var timestamp = req.headers["x-signature-timestamp"];
@@ -217,57 +452,80 @@ function handler(req, res) {
         return;
       }
 
-      var cmd = body.type === INTERACTION.COMMAND && body.data ? body.data.name : null;
-      if (cmd === "id" || cmd === "optimise" || cmd === "launch") {
-        var opts = body.data.options || [];
-        var villageOpt = opts.find(function (o) { return o.name === "village"; });
-        var village = villageOpt ? String(villageOpt.value).trim() : "";
-        var secondsOpt = opts.find(function (o) { return o.name === "seconds"; });
-        var seconds = secondsOpt != null ? parseInt(secondsOpt.value, 10) : null;
+      // Clic sur un menu déroulant (catégorie / village / plan)
+      if (body.type === INTERACTION.COMPONENT) {
+        return handleComponent(res, body);
+      }
 
-        if (!village) {
+      var cmd = body.type === INTERACTION.COMMAND && body.data ? body.data.name : null;
+      var MODE = {
+        id_syncro: "syncro", id_same_time: "raw",
+        launch_syncro: "syncro", launch_same_time: "raw",
+      };
+
+      // /id_syncro | /id_same_time => menu catégorie -> village -> plan -> tableau.
+      if (cmd === "id_syncro" || cmd === "id_same_time") {
+        return fetchCategories()
+          .then(function (cats) { respond(res, REPLY.MESSAGE, categoryMenuData(cats, MODE[cmd])); })
+          .catch(function () { dbError(res); });
+      }
+
+      // /launch_syncro | /launch_same_time <village> => ping (+ menu de plan si >1).
+      if (cmd === "launch_syncro" || cmd === "launch_same_time") {
+        var lmode = MODE[cmd];
+        var lopts = body.data.options || [];
+        var lvOpt = lopts.find(function (o) { return o.name === "village"; });
+        var lvillage = lvOpt ? String(lvOpt.value).trim() : "";
+        if (!lvillage) {
           reply(res, "Please provide a village ID, e.g. `/" + cmd + " 41707`.", true);
           return;
         }
-        if (cmd === "optimise" && seconds != null && (isNaN(seconds) || seconds < 0)) {
+        return fetchNukeByTarget(lvillage).then(function (nuke) {
+          if (!nuke) {
+            reply(res, "❌ No nuke found for village `" + lvillage +
+              "`. This nuke has not been created yet — please create it on the site first.", true);
+            return;
+          }
+          var variants = variantsOf(nuke);
+          if (variants.length > 1) {
+            respond(res, REPLY.MESSAGE, launchVariantMenuData(nuke, variants, lmode));
+            return;
+          }
+          var v = variants[0];
+          return resolveMentions(body.guild_id, participantNames(v)).then(function (resolved) {
+            return launchResponse(res, body.application_id, body.token, nuke, v, lmode, resolved, "");
+          });
+        }).catch(function () { dbError(res); });
+      }
+
+      // /optimise <village> [seconds] => plan principal (variante 1).
+      // Sans secondes => temps BRUTS ; avec => optimisé avec budget ±seconds.
+      if (cmd === "optimise") {
+        var oopts = body.data.options || [];
+        var ovOpt = oopts.find(function (o) { return o.name === "village"; });
+        var ovillage = ovOpt ? String(ovOpt.value).trim() : "";
+        var secOpt = oopts.find(function (o) { return o.name === "seconds"; });
+        var seconds = secOpt != null ? parseInt(secOpt.value, 10) : null;
+        if (!ovillage) {
+          reply(res, "Please provide a village ID, e.g. `/optimise 41707`.", true);
+          return;
+        }
+        if (seconds != null && (isNaN(seconds) || seconds < 0)) {
           reply(res, "Seconds must be 0 or more, e.g. `/optimise 41707 8` (omit it for raw times).", true);
           return;
         }
-
-        return fetchNukeByTarget(village)
-          .then(function (nuke) {
-            if (!nuke) {
-              reply(
-                res,
-                "❌ No nuke found for village `" + village +
-                  "`. This nuke has not been created yet — please create it on the site first.",
-                true
-              );
-              return;
-            }
-            // /launch => annonce de tir : on résout les noms (= noms Discord)
-            // en mentions <@id> pour PINGER réellement, puis on répond.
-            if (cmd === "launch") {
-              var names = (nuke.participants || [])
-                .map(function (p) { return (p.name || "").toString().trim(); })
-                .filter(function (n) { return n; });
-              return resolveMentions(body.guild_id, names).then(function (resolved) {
-                var ids = resolved
-                  .map(function (r) { return r.id; })
-                  .filter(function (id) { return id; });
-                replyWithMentions(res, buildLaunchMessage(nuke, village, resolved), ids);
-              });
-            }
-            // /optimise <id> sans secondes => temps bruts ; sinon optimisé ±seconds.
-            // /id => optimisé avec le budget par défaut (±8).
-            var msg = (cmd === "optimise" && seconds == null)
-              ? buildRawMessage(nuke, village)
-              : buildNukeMessage(nuke, village, cmd === "optimise" ? seconds : undefined);
-            reply(res, msg, false);
-          })
-          .catch(function () {
-            reply(res, "⚠️ Could not reach the database. Please try again in a moment.", true);
-          });
+        return fetchNukeByTarget(ovillage).then(function (nuke) {
+          if (!nuke) {
+            reply(res, "❌ No nuke found for village `" + ovillage +
+              "`. This nuke has not been created yet — please create it on the site first.", true);
+            return;
+          }
+          var v = variantsOf(nuke)[0];
+          var msg = seconds == null
+            ? variantTableMessage(nuke, v, "raw")
+            : variantTableMessage(nuke, v, "syncro", { maxAdj: seconds });
+          reply(res, msg, false);
+        }).catch(function () { dbError(res); });
       }
 
       // Commande inconnue

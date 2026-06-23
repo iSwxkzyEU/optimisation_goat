@@ -322,6 +322,34 @@ h1, h2, h3, h4 { font-family: "Space Grotesk", "Inter", sans-serif; letter-spaci
 .detail-player svg.lucide { width: 17px; height: 17px; color: var(--muted); }
 .detail-sub { display: flex; gap: 14px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .detail-actions { display: flex; gap: 8px; }
+
+/* ---------- Onglets de plans (variantes d'un village) ---------- */
+.variant-tabs {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--line);
+}
+.vtab {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-2); border: 1px solid var(--line-2); color: var(--muted);
+  padding: 7px 13px; border-radius: 9px; cursor: pointer; font-size: 13px; font-weight: 600;
+  font-family: inherit; transition: background .15s, color .15s, border-color .15s;
+}
+.vtab:hover { background: var(--bg-3); color: var(--text); }
+.vtab svg.lucide { width: 14px; height: 14px; }
+.vtab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.vtab.add { color: var(--muted); border-style: dashed; }
+.vtab.add:hover { color: var(--accent); border-color: var(--accent); }
+.vtab-spacer { flex: 1; }
+.vtab-act {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; background: transparent; border: 1px solid var(--line-2);
+  color: var(--muted); border-radius: 9px; cursor: pointer; transition: background .15s, color .15s, border-color .15s;
+}
+.vtab-act:hover { background: var(--bg-3); color: var(--text); }
+.vtab-act svg.lucide { width: 15px; height: 15px; }
+.vtab-act.danger { border-color: rgba(255,93,87,.4); color: var(--danger); }
+.vtab-act.danger:hover { background: rgba(255,93,87,.12); }
+
 .detail-grid { display: grid; grid-template-columns: 1fr 300px; gap: 22px; margin-top: 22px; }
 .detail-aside h4, .formations-box h4 {
   margin: 0 0 12px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; font-weight: 600;

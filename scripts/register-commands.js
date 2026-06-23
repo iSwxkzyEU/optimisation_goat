@@ -36,30 +36,43 @@ if (!APP_ID || !BOT_TOKEN) {
   process.exit(1);
 }
 
+// Argument "village" partagé par les commandes /launch_* et /optimise.
+var villageOption = {
+  type: 3, // STRING
+  name: "village",
+  description: "Targeted village ID (e.g. 41707)",
+  required: true,
+};
+
 // PUT groupé : la liste ci-dessous REMPLACE toutes les commandes existantes.
 var commands = [
   {
-    name: "id",
-    description: "Show the optimized launch table of the nuke targeting a village",
-    options: [
-      {
-        type: 3, // STRING
-        name: "village",
-        description: "Targeted village ID (e.g. 41707)",
-        required: true,
-      },
-    ],
+    // Menu catégorie -> village -> plan, puis tableau OPTIMISÉ (synchro).
+    name: "id_syncro",
+    description: "Browse a village and show its SYNCRO (optimized) launch table",
+  },
+  {
+    // Idem mais tableau BRUT (same time, sans optimisation).
+    name: "id_same_time",
+    description: "Browse a village and show its SAME-TIME (raw) launch table",
+  },
+  {
+    // Annonce de tir : récap + ping + tableau OPTIMISÉ (choix du plan si plusieurs).
+    name: "launch_syncro",
+    description: "Announce a strike (ping) with the SYNCRO (optimized) table",
+    options: [villageOption],
+  },
+  {
+    // Annonce de tir : récap + ping + tableau BRUT.
+    name: "launch_same_time",
+    description: "Announce a strike (ping) with the SAME-TIME (raw) table",
+    options: [villageOption],
   },
   {
     name: "optimise",
     description: "Optimize a nuke within a max fire window (omit seconds for raw times)",
     options: [
-      {
-        type: 3, // STRING
-        name: "village",
-        description: "Targeted village ID (e.g. 41707)",
-        required: true,
-      },
+      villageOption,
       {
         type: 4, // INTEGER
         name: "seconds",
@@ -67,18 +80,6 @@ var commands = [
         required: false,
         min_value: 0,
         max_value: 60,
-      },
-    ],
-  },
-  {
-    name: "launch",
-    description: "Announce an imminent strike and ask players to react + if ready",
-    options: [
-      {
-        type: 3, // STRING
-        name: "village",
-        description: "Targeted village ID (e.g. 41707)",
-        required: true,
       },
     ],
   },
@@ -93,6 +94,10 @@ fetch(url, {
   headers: {
     Authorization: "Bot " + BOT_TOKEN,
     "Content-Type": "application/json",
+    // User-Agent conforme : sans lui, le pare-feu de Discord peut bloquer les
+    // routes /applications & /guilds avec un trompeur 403 "internal network
+    // error" (code 40333), alors que /users/@me passe. À garder.
+    "User-Agent": "DiscordBot (https://vercel.app, 1.0)",
   },
   body: JSON.stringify(commands),
 })
@@ -102,7 +107,8 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commandes /id, /optimise et /launch enregistrées " +
+      console.log("✅ Commandes /id_syncro, /id_same_time, /launch_syncro, " +
+        "/launch_same_time et /optimise enregistrées " +
         (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
       console.log(body);
     });

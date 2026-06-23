@@ -26,6 +26,15 @@ alter table public.nukes add column if not exists target_player text;
 -- une nuke peut être rangée dans une localisation ET marquée prioritaire).
 alter table public.nukes add column if not exists priority boolean default false;
 
+-- "variants" = plusieurs PLANS de nuke pour un même village (onglets sur le
+-- site, choix 1/2/3 ou "toutes" sur le bot). Chaque variante porte son propre
+-- side / participants / spread / raw. Les colonnes side/spread/participants/...
+-- au niveau ligne restent en MIROIR de la variante 1 (rétro-compat) ; au
+-- chargement, une nuke sans "variants" est lue comme une variante unique
+-- construite depuis ces colonnes. Forme d'un élément :
+--   { "label","side","spread","participants":[...],"firstLaunch","raw" }
+alter table public.nukes add column if not exists variants jsonb default '[]'::jsonb;
+
 create table if not exists public.formations (
   id          uuid primary key default gen_random_uuid(),
   side        text not null,
@@ -65,9 +74,11 @@ create table if not exists public.nuke_history (
 --                consultable dans l'historique en cliquant sur une ligne.
 -- outside_nuke = la cible a été rasée HORS nuke (le plan n'a pas servi) :
 --                ça reste un succès, mais signalé comme tel dans l'historique.
-alter table public.nuke_history add column if not exists armies       int;
-alter table public.nuke_history add column if not exists details      jsonb;
-alter table public.nuke_history add column if not exists outside_nuke boolean default false;
+alter table public.nuke_history add column if not exists armies        int;
+alter table public.nuke_history add column if not exists details       jsonb;
+alter table public.nuke_history add column if not exists outside_nuke  boolean default false;
+-- variant_label = quel PLAN (variante) a été tiré, pour le retrouver dans l'historique.
+alter table public.nuke_history add column if not exists variant_label text;
 
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),
