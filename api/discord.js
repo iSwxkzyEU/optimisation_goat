@@ -600,10 +600,12 @@ function parsePlayers(text) {
   return out;
 }
 
-// Ligne "SHOOTERS" : "Mastersnidel(11282) ; Gandalf47(89877) ; …".
-function shooterLine(players) {
+// Liste "SHOOTERS" : un joueur par ligne, préfixé d'un tiret.
+//   - Mastersnidel(11282)
+//   - Gandalf47(89877)
+function shooterList(players) {
   if (!players || !players.length) return "—";
-  return players.map(function (p) { return p.name + "(" + p.id + ")"; }).join(" ; ");
+  return players.map(function (p) { return "- " + p.name + "(" + p.id + ")"; }).join("\n");
 }
 
 function repeatChar(ch, n) { return n > 0 ? new Array(n + 1).join(ch) : ""; }
@@ -680,7 +682,7 @@ function buildPlanMessage(plan, avail) {
     .map(function (p) { return "<@" + p.did + ">"; });
   var head =
     "🎯 **TARGET:** " + (plan.target || "—") +
-    "\n💥 **SHOOTERS (" + players.length + "):** " + shooterLine(players) +
+    "\n💥 **SHOOTERS (" + players.length + "):**\n" + shooterList(players) +
     (pings.length ? "\n\n" + pings.join(" ") : "") +
     "\n\nPlease share your availability to schedule the attack 👇";
 
