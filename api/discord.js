@@ -4,10 +4,15 @@
 
    Slash-commands :
      /plan                          : modal (cible + table d'attaque) -> extrait
-                                      les joueurs (SHOOTERS) et poste une grille
+                                      les joueurs (SHOOTERS), crée/réutilise un
+                                      salon PRIVÉ "nuke-<cible>" (accès aux seuls
+                                      joueurs de l'attaque) et y poste une grille
                                       de créneaux HEURE DU JEU (06:00 -> 00:00) ;
                                       chaque joueur coche ses dispos, le bot
                                       affiche en direct le meilleur créneau commun.
+                                      (Nécessite que le bot ait « Gérer les salons »
+                                      + « Gérer les rôles » ; sinon repli sur le
+                                      salon courant.)
      /id_syncro                     : menu catégorie -> village -> plan,
                                       puis tableau OPTIMISÉ (synchro).
      /id_same_time                  : idem mais tableau BRUT (same time).
@@ -51,7 +56,9 @@ var DISCORD_PUBLIC_KEY =
 
 // Types d'interaction / réponse Discord
 var INTERACTION = { PING: 1, COMMAND: 2, COMPONENT: 3, MODAL_SUBMIT: 5 };
-var REPLY = { PONG: 1, MESSAGE: 4, UPDATE: 7, MODAL: 9 };
+// DEFERRED (5) = "le bot réfléchit…" : on ACK tout de suite (limite 3 s) puis on
+// remplit le message via editOriginal() une fois le travail (salon + plan) fait.
+var REPLY = { PONG: 1, MESSAGE: 4, DEFERRED: 5, UPDATE: 7, MODAL: 9 };
 var EPHEMERAL = 64; // message visible seulement par l'utilisateur (flag)
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
@@ -174,6 +181,30 @@ function resolveMentions(guildId, names) {
       })
       .catch(function () { return { name: name, text: "@" + name, id: null }; });
   }));
+}
+
+// Appel REST authentifié au bot (token Bot). `path` commence par "/". Renvoie le
+// JSON décodé (null si 204). Rejette si pas de token ou si Discord répond en
+// erreur (ex. permission « Gérer les salons » manquante) — l'appelant décide quoi
+// faire de l'échec (cf. handlePlanModal qui retombe sur le salon courant).
+function discordBot(method, path, payload) {
+  var token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) return Promise.reject(new Error("DISCORD_BOT_TOKEN manquant"));
+  var opts = {
+    method: method,
+    headers: {
+      Authorization: "Bot " + token,
+      "Content-Type": "application/json",
+      "User-Agent": "DiscordBot (https://optimisation-goat.vercel.app, 1.0)",
+    },
+  };
+  if (payload != null) opts.body = JSON.stringify(payload);
+  return fetch("https://discord.com/api/v10" + path, opts).then(function (r) {
+    if (!r.ok) {
+      return r.text().then(function (t) { throw new Error("Discord " + r.status + " " + t); });
+    }
+    return r.status === 204 ? null : r.json().catch(function () { return null; });
+  });
 }
 
 // --- Composants (menus déroulants) -------------------------------------
@@ -524,14 +555,36 @@ function buildLaunchPing(row, variant, resolved, tag) {
   return head + "\n\n@ everyone in this nuke\n\n" + foot;
 }
 
-// Message de suivi (followup) via le webhook de l'interaction (valable 15 min,
-// pas besoin du bot token). Échec silencieux : un followup raté n'a pas à
-// casser la réponse principale déjà envoyée. User-Agent conforme par sécurité.
-function followup(appId, token, content) {
-  if (!appId || !token || !content) return Promise.resolve();
+// POST d'un followup (data brut : content/components/allowed_mentions/flags…) via
+// le webhook de l'interaction (valable 15 min, pas besoin du bot token). Échec
+// silencieux : un followup raté n'a pas à casser la réponse déjà envoyée.
+function followupData(appId, token, data) {
+  if (!appId || !token || !data) return Promise.resolve();
   var url = "https://discord.com/api/v10/webhooks/" + appId + "/" + token;
   return fetch(url, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "DiscordBot (https://optimisation-goat.vercel.app, 1.0)",
+    },
+    body: JSON.stringify(data),
+  }).then(function () {}, function () {});
+}
+
+// Message de suivi texte (cas courant). User-Agent conforme par sécurité.
+function followup(appId, token, content) {
+  if (!content) return Promise.resolve();
+  return followupData(appId, token, { content: content });
+}
+
+// Édite le message de la réponse INITIALE de l'interaction (le "le bot
+// réfléchit…" du DEFERRED) : PATCH .../messages/@original. Utilise le token
+// d'interaction (pas le bot token) → marche même si DISCORD_BOT_TOKEN est absent.
+function editOriginal(appId, token, content) {
+  if (!appId || !token) return Promise.resolve();
+  var url = "https://discord.com/api/v10/webhooks/" + appId + "/" + token + "/messages/@original";
+  return fetch(url, {
+    method: "PATCH",
     headers: {
       "Content-Type": "application/json",
       "User-Agent": "DiscordBot (https://optimisation-goat.vercel.app, 1.0)",
@@ -755,18 +808,90 @@ function interactionUser(body) {
   return { id: u.id || "?", name: name };
 }
 
-// Validation d'un modal /plan -> on résout les pseudos en membres Discord (pour
-// PINGUER ceux qui matchent), on crée le plan, puis on poste le message + grille.
+// ============================================================
+//  Salon privé "nuke-<cible>" — créé/réutilisé à chaque /plan.
+// ============================================================
+
+// Bits de permission Discord (cf. doc) — passés en STRING à l'API v10.
+var PERM = { VIEW: 1024, SEND: 2048, HISTORY: 65536 };
+var PERM_MEMBER = String(PERM.VIEW | PERM.SEND | PERM.HISTORY); // voir + écrire + historique
+
+// Nom de salon déterministe pour une cible : "nuke-<slug>". Discord impose des
+// noms en minuscules sans espaces ni caractères spéciaux ; on slugifie nous-mêmes
+// pour que le nom envoyé == le nom stocké (indispensable pour retrouver/réutiliser
+// le salon existant). Ex. "41707" -> "nuke-41707", "Bois Noir" -> "nuke-bois-noir".
+function nukeChannelName(target) {
+  var slug = String(target || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")   // tout le reste -> tiret
+    .replace(/^-+|-+$/g, "");      // pas de tiret en bord
+  return ("nuke-" + (slug || "cible")).slice(0, 100);
+}
+
+// Overwrites pour un salon PRIVÉ : @everyone ne voit rien, chaque joueur résolu
+// + le bot ont l'accès. (id de @everyone = id du serveur ; type 0 = rôle, 1 = membre.)
+function nukeOverwrites(guildId, botId, memberIds) {
+  var ow = [
+    { id: guildId, type: 0, allow: "0", deny: String(PERM.VIEW) }, // @everyone : caché
+  ];
+  if (botId) ow.push({ id: botId, type: 1, allow: PERM_MEMBER, deny: "0" }); // le bot peut poster
+  (memberIds || []).forEach(function (id) {
+    ow.push({ id: id, type: 1, allow: PERM_MEMBER, deny: "0" });
+  });
+  return ow;
+}
+
+// Crée le salon "nuke-<cible>" (ou réutilise celui qui existe déjà, même nom) et
+// (re)pose les droits privés pour TOUS les joueurs de l'attaque. Renvoie l'id du
+// salon. Rejette si le bot n'a pas les droits (Gérer les salons / Gérer les rôles)
+// -> l'appelant retombe alors sur le salon courant.
+function ensureNukeChannel(guildId, botId, target, memberIds) {
+  var name = nukeChannelName(target);
+  var ow = nukeOverwrites(guildId, botId, memberIds);
+  return discordBot("GET", "/guilds/" + guildId + "/channels").then(function (channels) {
+    var existing = (channels || []).find(function (c) {
+      return c && c.type === 0 && c.name === name;
+    });
+    if (existing) {
+      // Réutilise : on réécrit les overwrites pour inclure d'éventuels nouveaux
+      // joueurs (PATCH remplace la liste ; on garde @everyone caché + le bot).
+      return discordBot("PATCH", "/channels/" + existing.id, { permission_overwrites: ow })
+        .then(function () { return existing.id; }, function () { return existing.id; });
+    }
+    return discordBot("POST", "/guilds/" + guildId + "/channels", {
+      name: name, type: 0, permission_overwrites: ow,
+    }).then(function (ch) { return ch && ch.id; });
+  });
+}
+
+// Poste un message (content/components/allowed_mentions) dans un salon via bot token.
+function postChannelMessage(channelId, data) {
+  return discordBot("POST", "/channels/" + channelId + "/messages", data);
+}
+
+// Validation d'un modal /plan. On a ≤3 s pour répondre à Discord, or créer le
+// salon + poser les droits + poster le plan = plusieurs allers-retours -> on ACK
+// d'abord en DEFERRED (éphémère), puis on fait le travail et on remplit la réponse
+// via editOriginal(). Étapes : résoudre les pseudos -> créer le plan en base ->
+// créer/réutiliser le salon privé "nuke-<cible>" -> y poster le sondage. Si la
+// création du salon échoue (droits du bot), on retombe sur le salon courant.
 function handlePlanModal(res, body) {
   var vals = modalValues(body);
   var players = parsePlayers(vals.attack);
   var user = interactionUser(body);
+  var appId = body.application_id, token = body.token, guildId = body.guild_id;
+
+  // ACK immédiat : "le bot réfléchit…" (visible par toi seul).
+  respond(res, REPLY.DEFERRED, { flags: EPHEMERAL });
+
   // Résout chaque pseudo en jeu -> membre Discord (match exact). did = id Discord
-  // si trouvé ; stocké dans players pour rendre les mentions au re-render.
-  return resolveMentions(body.guild_id, players.map(function (p) { return p.name; }))
+  // si trouvé ; stocké dans players pour rendre les mentions + donner l'accès au salon.
+  var work = resolveMentions(guildId, players.map(function (p) { return p.name; }))
     .then(function (resolved) {
       resolved.forEach(function (r, i) { if (r.id && players[i]) players[i].did = r.id; });
       var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
+      var unresolved = resolved.filter(function (r) { return !r.id; })
+        .map(function (r) { return r.name; });
       var plan = {
         target: (vals.target || "").trim(),
         attack_text: (vals.attack || "").trim(),
@@ -775,14 +900,39 @@ function handlePlanModal(res, body) {
         created_by: user.id,
       };
       return createPlan(plan).then(function (saved) {
-        if (!saved) { dbError(res); return; }
-        respond(res, REPLY.MESSAGE, {
+        if (!saved) return editOriginal(appId, token, "❌ Database error — the plan wasn't saved.");
+        var msg = {
           content: buildPlanMessage(saved, []),
           components: planComponents(saved),
           allowed_mentions: { parse: [], users: ids.slice(0, 100) },
-        });
+        };
+        var note = unresolved.length
+          ? "\n⚠️ Not added to the channel (Discord name not found): " + unresolved.join(", ") + "."
+          : "";
+        return ensureNukeChannel(guildId, appId, plan.target, ids)
+          .then(function (channelId) {
+            return postChannelMessage(channelId, msg).then(function () {
+              return editOriginal(appId, token,
+                "✅ Channel <#" + channelId + "> is ready — the availability poll is posted there." + note);
+            });
+          })
+          .catch(function () {
+            // Création du salon impossible (souvent : bot sans « Gérer les salons »
+            // / « Gérer les rôles »). On ne perd pas le sondage : on le poste ici.
+            return followupData(appId, token, msg).then(function () {
+              return editOriginal(appId, token,
+                "⚠️ Couldn't create the private channel — does the bot have **Manage Channels** and " +
+                "**Manage Roles**? Posted the poll in this channel instead." + note);
+            });
+          });
       });
-    }).catch(function () { dbError(res); });
+    })
+    .catch(function () {
+      return editOriginal(appId, token, "❌ Something went wrong while creating the plan.");
+    });
+
+  vercelWaitUntil(work);
+  return work;
 }
 
 function handleModalSubmit(res, body) {
