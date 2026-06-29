@@ -214,6 +214,14 @@ function textInput(customId, label, opts) {
 
 function pad2(n) { return (n < 10 ? "0" : "") + n; }
 
+// Bouton (type 2). style : 1=primary, 2=secondary, 3=success, 4=danger.
+function button(customId, label, opts) {
+  opts = opts || {};
+  var b = { type: 2, style: opts.style || 2, custom_id: customId, label: label };
+  if (opts.emoji) b.emoji = { name: opts.emoji };
+  return b;
+}
+
 // --- Variantes (plusieurs PLANS par village) ----------------------------
 // Liste des variantes d'une LIGNE Supabase (snake_case). Rétro-compat : si la
 // colonne "variants" est absente/vide, on reconstruit une variante unique
@@ -435,22 +443,20 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
-  // [PLAN] Vote de disponibilité : on enregistre la sélection du joueur,
-  // puis on re-render le message (UPDATE) avec les compteurs à jour.
+  // [PLAN] Vote de disponibilité : on enregistre (remplace) la sélection du
+  // joueur, puis on re-render le message (UPDATE) avec les compteurs à jour.
   if (kind === "pa") {
-    var planId = parts[1];
-    var user = interactionUser(body);
-    var sel = (data.values || []).slice();
-    return upsertAvailability(planId, user.id, user.name, sel)
-      .then(function () { return Promise.all([fetchPlan(planId), fetchAvailability(planId)]); })
-      .then(function (arr) {
-        var plan = arr[0], avail = arr[1] || [];
-        if (!plan) { reply(res, "❌ This plan no longer exists.", true); return; }
-        respond(res, REPLY.UPDATE, {
-          content: buildPlanMessage(plan, avail),
-          components: planComponents(plan),
-        });
-      })
+    var voter = interactionUser(body);
+    return upsertAvailability(parts[1], voter.id, voter.name, (data.values || []).slice())
+      .then(function () { return renderPlanUpdate(res, parts[1]); })
+      .catch(function () { dbError(res); });
+  }
+
+  // [PLAN] Bouton "Clear my availability" : vide le vote du joueur (re-render).
+  if (kind === "pac") {
+    var clearer = interactionUser(body);
+    return upsertAvailability(parts[1], clearer.id, clearer.name, [])
+      .then(function () { return renderPlanUpdate(res, parts[1]); })
       .catch(function () { dbError(res); });
   }
 
@@ -640,8 +646,11 @@ function planComponents(plan) {
     return { label: String(s).slice(0, 100), value: String(i) };
   });
   options.push({ label: "🚫 Not available today", value: PLAN_NA });
-  return [row(selectMenu("pa:" + plan.id, "Pick every GAME TIME slot you're free",
-    options, { min: 0, max: options.length }))];
+  return [
+    row(selectMenu("pa:" + plan.id, "Pick every GAME TIME slot you're free",
+      options, { min: 0, max: options.length })),
+    row(button("pac:" + plan.id, "Clear my availability", { style: 2, emoji: "🗑️" })),
+  ];
 }
 
 // Construit le message du plan : TARGET / SHOOTERS / COMPO / grille de dispos.
@@ -665,9 +674,14 @@ function buildPlanMessage(plan, avail) {
   var bestIdx = -1;
   counts.forEach(function (c, i) { if (max > 0 && c.length === max && bestIdx < 0) bestIdx = i; });
 
+  // Joueurs résolus en membres Discord (did renseigné à la création) -> mentions.
+  var pings = players
+    .filter(function (p) { return p.did; })
+    .map(function (p) { return "<@" + p.did + ">"; });
   var head =
     "🎯 **TARGET:** " + (plan.target || "—") +
     "\n💥 **SHOOTERS (" + players.length + "):** " + shooterLine(players) +
+    (pings.length ? "\n\n" + pings.join(" ") : "") +
     "\n\nPlease share your availability to schedule the attack 👇";
 
   var compo = plan.attack_text ? "\n\n**COMPO**\n```\n" + plan.attack_text + "\n```" : "";
@@ -678,7 +692,9 @@ function buildPlanMessage(plan, avail) {
       (i === bestIdx ? "  ← best" : "");
   });
   var grid = "\n🕒 **Availability (game time)** — " + voters + " player" +
-    (voters === 1 ? "" : "s") + " voted, multi-select below:\n" + gridLines.join("\n");
+    (voters === 1 ? "" : "s") + " voted\n" +
+    "*Pick all slots you're free below. Re-open the menu anytime to change your pick, or 🗑️ to clear it.*\n" +
+    gridLines.join("\n");
   if (bestIdx >= 0) {
     grid += "\n\n✅ **Best slot: " + slots[bestIdx] + "** — " + max + " available";
     if (counts[bestIdx].length) grid += ": " + counts[bestIdx].join(", ");
@@ -716,6 +732,20 @@ function upsertAvailability(planId, userId, userName, slots) {
     { Prefer: "resolution=merge-duplicates,return=minimal" });
 }
 
+// Re-render du message d'un plan (UPDATE) après un vote / un clear. On supprime
+// les mentions (parse: []) pour NE PAS re-pinguer les joueurs à chaque clic.
+function renderPlanUpdate(res, planId) {
+  return Promise.all([fetchPlan(planId), fetchAvailability(planId)]).then(function (arr) {
+    var plan = arr[0], avail = arr[1] || [];
+    if (!plan) { reply(res, "❌ This plan no longer exists.", true); return; }
+    respond(res, REPLY.UPDATE, {
+      content: buildPlanMessage(plan, avail),
+      components: planComponents(plan),
+      allowed_mentions: { parse: [] },
+    });
+  });
+}
+
 // Discord renvoie le membre (guild) ou l'utilisateur (DM). Pseudo serveur en priorité.
 function interactionUser(body) {
   var u = (body.member && body.member.user) || body.user || {};
@@ -723,25 +753,34 @@ function interactionUser(body) {
   return { id: u.id || "?", name: name };
 }
 
-// Validation d'un modal /plan -> création du plan + message public avec la grille.
+// Validation d'un modal /plan -> on résout les pseudos en membres Discord (pour
+// PINGUER ceux qui matchent), on crée le plan, puis on poste le message + grille.
 function handlePlanModal(res, body) {
   var vals = modalValues(body);
   var players = parsePlayers(vals.attack);
   var user = interactionUser(body);
-  var plan = {
-    target: (vals.target || "").trim(),
-    attack_text: (vals.attack || "").trim(),
-    players: players,
-    slots: defaultSlots(),
-    created_by: user.id,
-  };
-  return createPlan(plan).then(function (saved) {
-    if (!saved) { dbError(res); return; }
-    respond(res, REPLY.MESSAGE, {
-      content: buildPlanMessage(saved, []),
-      components: planComponents(saved),
-    });
-  }).catch(function () { dbError(res); });
+  // Résout chaque pseudo en jeu -> membre Discord (match exact). did = id Discord
+  // si trouvé ; stocké dans players pour rendre les mentions au re-render.
+  return resolveMentions(body.guild_id, players.map(function (p) { return p.name; }))
+    .then(function (resolved) {
+      resolved.forEach(function (r, i) { if (r.id && players[i]) players[i].did = r.id; });
+      var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
+      var plan = {
+        target: (vals.target || "").trim(),
+        attack_text: (vals.attack || "").trim(),
+        players: players,
+        slots: defaultSlots(),
+        created_by: user.id,
+      };
+      return createPlan(plan).then(function (saved) {
+        if (!saved) { dbError(res); return; }
+        respond(res, REPLY.MESSAGE, {
+          content: buildPlanMessage(saved, []),
+          components: planComponents(saved),
+          allowed_mentions: { parse: [], users: ids.slice(0, 100) },
+        });
+      });
+    }).catch(function () { dbError(res); });
 }
 
 function handleModalSubmit(res, body) {
