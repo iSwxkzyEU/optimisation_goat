@@ -653,12 +653,21 @@ function parsePlayers(text) {
   return out;
 }
 
+// Signe d'un papillon le joueur "Varju bence" (varjubence.) partout où le bot
+// écrit son nom EN TEXTE dans /plan (pas dans le tableau ASCII -> alignement).
+// Match tolérant : on réduit le nom à ses lettres/chiffres minuscules, donc
+// "Varju bence", "varjubence." et "VarjuBence" matchent tous.
+function decorateName(name) {
+  var norm = String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return norm === "varjubence" ? name + " 🦋" : name;
+}
+
 // Liste "SHOOTERS" : un joueur par ligne, préfixé d'un tiret.
 //   - Mastersnidel(11282)
 //   - Gandalf47(89877)
 function shooterList(players) {
   if (!players || !players.length) return "—";
-  return players.map(function (p) { return "- " + p.name + "(" + p.id + ")"; }).join("\n");
+  return players.map(function (p) { return "- " + decorateName(p.name) + "(" + p.id + ")"; }).join("\n");
 }
 
 function repeatChar(ch, n) { return n > 0 ? new Array(n + 1).join(ch) : ""; }
@@ -752,11 +761,11 @@ function buildPlanMessage(plan, avail) {
     gridLines.join("\n");
   if (bestIdx >= 0) {
     grid += "\n\n✅ **Best slot: " + slots[bestIdx] + "** — " + max + " available";
-    if (counts[bestIdx].length) grid += ": " + counts[bestIdx].join(", ");
+    if (counts[bestIdx].length) grid += ": " + counts[bestIdx].map(decorateName).join(", ");
   } else {
     grid += "\n\n*No availability yet — be the first to pick your slots.*";
   }
-  if (naNames.length) grid += "\n🚫 **Not available today:** " + naNames.join(", ");
+  if (naNames.length) grid += "\n🚫 **Not available today:** " + naNames.map(decorateName).join(", ");
 
   var body = head + compo + "\n" + grid;
   if (body.length <= 2000) return body;
