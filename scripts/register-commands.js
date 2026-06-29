@@ -56,6 +56,12 @@ var villageOptionLaunch = {
 // PUT groupé : la liste ci-dessous REMPLACE toutes les commandes existantes.
 var commands = [
   {
+    // Ouvre un modal (cible + table d'attaque) puis poste une grille de
+    // disponibilités HEURE DU JEU (06:00 -> 00:00) que chaque joueur coche.
+    name: "plan",
+    description: "Plan an attack: paste the table, players vote their GAME TIME availability",
+  },
+  {
     // Menu catégorie -> village -> plan, puis tableau OPTIMISÉ (synchro).
     name: "id_syncro",
     description: "Browse a village and show its SYNCRO (optimized) launch table",
@@ -116,7 +122,7 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commandes /id_syncro, /id_same_time, /launch_syncro, " +
+      console.log("✅ Commandes /plan, /id_syncro, /id_same_time, /launch_syncro, " +
         "/launch_same_time et /optimise enregistrées " +
         (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
       console.log(body);

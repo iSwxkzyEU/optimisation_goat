@@ -3,6 +3,11 @@
    Même logique de calcul que le site (js/optimizer.js).
 
    Slash-commands :
+     /plan                          : modal (cible + table d'attaque) -> extrait
+                                      les joueurs (SHOOTERS) et poste une grille
+                                      de créneaux HEURE DU JEU (06:00 -> 00:00) ;
+                                      chaque joueur coche ses dispos, le bot
+                                      affiche en direct le meilleur créneau commun.
      /id_syncro                     : menu catégorie -> village -> plan,
                                       puis tableau OPTIMISÉ (synchro).
      /id_same_time                  : idem mais tableau BRUT (same time).
@@ -45,8 +50,8 @@ var DISCORD_PUBLIC_KEY =
   "fabb1ef7f21800fb6c766c00db6dc1259fcac647ae6c49711ee993a587afb9ea";
 
 // Types d'interaction / réponse Discord
-var INTERACTION = { PING: 1, COMMAND: 2, COMPONENT: 3 };
-var REPLY = { PONG: 1, MESSAGE: 4, UPDATE: 7 };
+var INTERACTION = { PING: 1, COMMAND: 2, COMPONENT: 3, MODAL_SUBMIT: 5 };
+var REPLY = { PONG: 1, MESSAGE: 4, UPDATE: 7, MODAL: 9 };
 var EPHEMERAL = 64; // message visible seulement par l'utilisateur (flag)
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
@@ -84,6 +89,26 @@ function sbGet(path) {
     if (!res.ok) throw new Error("Supabase " + res.status);
     return res.json();
   });
+}
+
+// Écriture PostgREST générique (POST/PATCH/…). `extra` = en-têtes additionnels
+// (ex. Prefer: return=representation / resolution=merge-duplicates). Renvoie le
+// JSON décodé, ou null si la réponse est vide (204 / return=minimal).
+function sbWrite(method, path, payload, extra) {
+  var url = SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/" + path;
+  var headers = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: "Bearer " + SUPABASE_ANON_KEY,
+    "Content-Type": "application/json",
+  };
+  if (extra) Object.keys(extra).forEach(function (k) { headers[k] = extra[k]; });
+  return fetch(url, { method: method, headers: headers, body: JSON.stringify(payload) })
+    .then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (t) { throw new Error("Supabase " + res.status + " " + t); });
+      }
+      return res.status === 204 ? null : res.json().catch(function () { return null; });
+    });
 }
 
 // Récupère la 1ʳᵉ nuke dont target = village. null si aucune.
@@ -164,9 +189,30 @@ function row() {
 }
 
 // Menu déroulant string (type 3). 25 options max côté Discord.
-function selectMenu(customId, placeholder, options) {
-  return { type: 3, custom_id: customId, placeholder: placeholder, options: options };
+// opts.min / opts.max = min_values / max_values (multi-sélection).
+function selectMenu(customId, placeholder, options, opts) {
+  var menu = { type: 3, custom_id: customId, placeholder: placeholder, options: options };
+  if (opts) {
+    if (opts.min != null) menu.min_values = opts.min;
+    if (opts.max != null) menu.max_values = opts.max;
+  }
+  return menu;
 }
+
+// Champ texte d'un modal (type 4). style 1 = court, 2 = paragraphe.
+// DOIT être seul dans son action row (row(textInput(...))).
+function textInput(customId, label, opts) {
+  opts = opts || {};
+  var c = { type: 4, custom_id: customId, label: label, style: opts.style || 1 };
+  if (opts.required != null) c.required = opts.required;
+  if (opts.placeholder) c.placeholder = opts.placeholder;
+  if (opts.max_length) c.max_length = opts.max_length;
+  if (opts.min_length) c.min_length = opts.min_length;
+  if (opts.value) c.value = opts.value;
+  return c;
+}
+
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
 
 // --- Variantes (plusieurs PLANS par village) ----------------------------
 // Liste des variantes d'une LIGNE Supabase (snake_case). Rétro-compat : si la
@@ -389,6 +435,25 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
+  // [PLAN] Vote de disponibilité : on enregistre la sélection du joueur,
+  // puis on re-render le message (UPDATE) avec les compteurs à jour.
+  if (kind === "pa") {
+    var planId = parts[1];
+    var user = interactionUser(body);
+    var sel = (data.values || []).slice();
+    return upsertAvailability(planId, user.id, user.name, sel)
+      .then(function () { return Promise.all([fetchPlan(planId), fetchAvailability(planId)]); })
+      .then(function (arr) {
+        var plan = arr[0], avail = arr[1] || [];
+        if (!plan) { reply(res, "❌ This plan no longer exists.", true); return; }
+        respond(res, REPLY.UPDATE, {
+          content: buildPlanMessage(plan, avail),
+          components: planComponents(plan),
+        });
+      })
+      .catch(function () { dbError(res); });
+  }
+
   reply(res, "Unknown interaction.", true);
 }
 
@@ -497,6 +562,195 @@ function launchResponse(res, appId, token, row, variant, mode, resolved, tag) {
   return followup(appId, token, table);
 }
 
+// ============================================================
+//  /plan — sondage de disponibilité (HEURE DU JEU)
+//  /plan -> modal (target + table d'attaque). À la validation, on extrait
+//  les joueurs de la table, on crée un "plan" en base et on poste un message
+//  avec la COMPO + une grille de créneaux 06:00 -> 00:00 à cocher. Chaque clic
+//  enregistre la dispo du joueur et re-render le message (meilleur créneau).
+// ============================================================
+
+var PLAN_NA = "na"; // valeur spéciale du menu : "Not available today"
+
+// Créneaux proposés : toutes les heures pleines de 06:00 à minuit (00:00),
+// en HEURE DU JEU. -> 19 créneaux (06:00 … 23:00, 00:00).
+function defaultSlots() {
+  var out = [];
+  for (var h = 6; h <= 24; h++) out.push(pad2(h % 24) + ":00");
+  return out;
+}
+
+// Extrait les joueurs d'une table d'attaque collée : motifs "11282[Mastersnidel]"
+// (ID + pseudo entre crochets). Dédupliqué par ID, dans l'ordre d'apparition.
+function parsePlayers(text) {
+  var re = /(\d+)\s*\[\s*([^\]]+?)\s*\]/g;
+  var out = [], seen = {}, m;
+  while ((m = re.exec(String(text || "")))) {
+    var id = m[1];
+    if (seen[id]) continue;
+    seen[id] = true;
+    out.push({ id: id, name: m[2].trim() });
+  }
+  return out;
+}
+
+// Ligne "SHOOTERS" : "Mastersnidel(11282) ; Gandalf47(89877) ; …".
+function shooterLine(players) {
+  if (!players || !players.length) return "—";
+  return players.map(function (p) { return p.name + "(" + p.id + ")"; }).join(" ; ");
+}
+
+function repeatChar(ch, n) { return n > 0 ? new Array(n + 1).join(ch) : ""; }
+function padEndStr(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
+
+// Barre de progression (█/░) proportionnelle au max de votes d'un créneau.
+function planBar(n, max, width) {
+  width = width || 10;
+  var filled = max ? Math.round((n / max) * width) : 0;
+  if (n > 0 && filled === 0) filled = 1;
+  if (filled > width) filled = width;
+  return repeatChar("█", filled) + repeatChar("░", width - filled);
+}
+
+// Lit les valeurs d'un modal soumis : { custom_id_du_champ: valeur }.
+function modalValues(body) {
+  var out = {};
+  (((body.data || {}).components) || []).forEach(function (r) {
+    (r.components || []).forEach(function (c) { out[c.custom_id] = c.value; });
+  });
+  return out;
+}
+
+// Modal de /plan : cible + table d'attaque (les créneaux sont fixes).
+function planModalData() {
+  return {
+    custom_id: "plan_modal",
+    title: "New attack plan",
+    components: [
+      row(textInput("target", "Target (village ID or name)", { style: 1, required: true, max_length: 100 })),
+      row(textInput("attack", "Attack file (paste the table)", { style: 2, required: true, max_length: 4000 })),
+    ],
+  };
+}
+
+// Menu de la grille : un choix par créneau (valeur = index) + "Not available today".
+function planComponents(plan) {
+  var slots = plan.slots || [];
+  var options = slots.slice(0, 24).map(function (s, i) {
+    return { label: String(s).slice(0, 100), value: String(i) };
+  });
+  options.push({ label: "🚫 Not available today", value: PLAN_NA });
+  return [row(selectMenu("pa:" + plan.id, "Pick every GAME TIME slot you're free",
+    options, { min: 0, max: options.length }))];
+}
+
+// Construit le message du plan : TARGET / SHOOTERS / COMPO / grille de dispos.
+// `avail` = lignes plan_availability ([{ user_name, slots:[idx|"na"] }]).
+function buildPlanMessage(plan, avail) {
+  var slots = plan.slots || [];
+  var players = plan.players || [];
+  var counts = slots.map(function () { return []; });
+  var naNames = [];
+  (avail || []).forEach(function (a) {
+    var sel = a.slots || [];
+    var name = a.user_name || "?";
+    if (sel.indexOf(PLAN_NA) !== -1) naNames.push(name);
+    sel.forEach(function (v) {
+      var i = parseInt(v, 10);
+      if (!isNaN(i) && i >= 0 && i < counts.length) counts[i].push(name);
+    });
+  });
+  var voters = (avail || []).filter(function (a) { return (a.slots || []).length; }).length;
+  var max = counts.reduce(function (mx, c) { return Math.max(mx, c.length); }, 0);
+  var bestIdx = -1;
+  counts.forEach(function (c, i) { if (max > 0 && c.length === max && bestIdx < 0) bestIdx = i; });
+
+  var head =
+    "🎯 **TARGET:** " + (plan.target || "—") +
+    "\n💥 **SHOOTERS (" + players.length + "):** " + shooterLine(players) +
+    "\n\nPlease share your availability to schedule the attack 👇";
+
+  var compo = plan.attack_text ? "\n\n**COMPO**\n```\n" + plan.attack_text + "\n```" : "";
+
+  var gridLines = slots.map(function (s, i) {
+    var c = counts[i].length;
+    return "`" + padEndStr(s, 6) + "` " + planBar(c, max) + " **" + c + "**" +
+      (i === bestIdx ? "  ← best" : "");
+  });
+  var grid = "\n🕒 **Availability (game time)** — " + voters + " player" +
+    (voters === 1 ? "" : "s") + " voted, multi-select below:\n" + gridLines.join("\n");
+  if (bestIdx >= 0) {
+    grid += "\n\n✅ **Best slot: " + slots[bestIdx] + "** — " + max + " available";
+    if (counts[bestIdx].length) grid += ": " + counts[bestIdx].join(", ");
+  } else {
+    grid += "\n\n*No availability yet — be the first to pick your slots.*";
+  }
+  if (naNames.length) grid += "\n🚫 **Not available today:** " + naNames.join(", ");
+
+  var body = head + compo + "\n" + grid;
+  if (body.length <= 2000) return body;
+  // Trop long : on retire la COMPO (toujours en base / visible via /id, /optimise).
+  body = head + "\n\n*(compo hidden — too long for Discord)*\n" + grid;
+  if (body.length <= 2000) return body;
+  // Encore trop long : on tronque.
+  return ("🎯 **TARGET:** " + (plan.target || "—") + "\n" + grid).slice(0, 1990);
+}
+
+function createPlan(plan) {
+  return sbWrite("POST", "plans", plan, { Prefer: "return=representation" })
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+function fetchPlan(id) {
+  return sbGet("plans?select=*&limit=1&id=eq." + encodeURIComponent(id))
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+function fetchAvailability(planId) {
+  return sbGet("plan_availability?select=user_id,user_name,slots&plan_id=eq." +
+    encodeURIComponent(planId));
+}
+// Upsert (remplace) le vote d'un joueur : clé (plan_id, user_id).
+function upsertAvailability(planId, userId, userName, slots) {
+  return sbWrite("POST", "plan_availability?on_conflict=plan_id,user_id",
+    { plan_id: planId, user_id: userId, user_name: userName, slots: slots,
+      updated_at: new Date().toISOString() },
+    { Prefer: "resolution=merge-duplicates,return=minimal" });
+}
+
+// Discord renvoie le membre (guild) ou l'utilisateur (DM). Pseudo serveur en priorité.
+function interactionUser(body) {
+  var u = (body.member && body.member.user) || body.user || {};
+  var name = (body.member && body.member.nick) || u.global_name || u.username || "player";
+  return { id: u.id || "?", name: name };
+}
+
+// Validation d'un modal /plan -> création du plan + message public avec la grille.
+function handlePlanModal(res, body) {
+  var vals = modalValues(body);
+  var players = parsePlayers(vals.attack);
+  var user = interactionUser(body);
+  var plan = {
+    target: (vals.target || "").trim(),
+    attack_text: (vals.attack || "").trim(),
+    players: players,
+    slots: defaultSlots(),
+    created_by: user.id,
+  };
+  return createPlan(plan).then(function (saved) {
+    if (!saved) { dbError(res); return; }
+    respond(res, REPLY.MESSAGE, {
+      content: buildPlanMessage(saved, []),
+      components: planComponents(saved),
+    });
+  }).catch(function () { dbError(res); });
+}
+
+function handleModalSubmit(res, body) {
+  var cid = (body.data && body.data.custom_id) || "";
+  if (cid === "plan_modal") return handlePlanModal(res, body);
+  reply(res, "Unknown modal.", true);
+  return Promise.resolve();
+}
+
 function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
@@ -535,11 +789,23 @@ function handler(req, res) {
         return handleComponent(res, body);
       }
 
+      // Validation d'un modal (formulaire popup) — ex. /plan.
+      if (body.type === INTERACTION.MODAL_SUBMIT) {
+        return handleModalSubmit(res, body);
+      }
+
       var cmd = body.type === INTERACTION.COMMAND && body.data ? body.data.name : null;
       var MODE = {
         id_syncro: "syncro", id_same_time: "raw",
         launch_syncro: "syncro", launch_same_time: "raw",
       };
+
+      // /plan => ouvre un modal (cible + table d'attaque). La suite (création
+      // du plan + grille de dispos) se fait à la validation du modal.
+      if (cmd === "plan") {
+        respond(res, REPLY.MODAL, planModalData());
+        return;
+      }
 
       // /id_syncro | /id_same_time => navigation ÉPHÉMÈRE (toi seul la vois) :
       // catégorie -> village -> plan ; le tableau choisi, lui, est PUBLIC.

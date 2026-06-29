@@ -80,23 +80,55 @@ alter table public.nuke_history add column if not exists outside_nuke  boolean d
 -- variant_label = quel PLAN (variante) a été tiré, pour le retrouver dans l'historique.
 alter table public.nuke_history add column if not exists variant_label text;
 
+-- ---------- /plan : sondage de disponibilité (bot Discord) ----------
+-- Un "plan" = une opération en préparation : on colle la table d'attaque, le
+-- bot en extrait les joueurs (SHOOTERS) puis poste une grille de créneaux
+-- HEURE DU JEU (06:00 -> 00:00). Chaque joueur coche ses créneaux dispo ;
+-- le bot calcule en direct le meilleur créneau commun.
+create table if not exists public.plans (
+  id          uuid primary key default gen_random_uuid(),
+  target      text,                          -- village ID / nom de la cible
+  attack_text text,                          -- table d'attaque collée (COMPO)
+  players     jsonb default '[]'::jsonb,      -- [{ "id","name" }] extraits de la table
+  slots       jsonb default '[]'::jsonb,      -- ["06:00","07:00",...] (heure du jeu)
+  created_by  text,                           -- user id Discord du lanceur
+  created_at  timestamptz default now()
+);
+
+-- Une ligne par joueur ayant voté (remplace son vote précédent). slots =
+-- indices des créneaux où il est dispo (cf. plans.slots).
+create table if not exists public.plan_availability (
+  plan_id    uuid references public.plans(id) on delete cascade,
+  user_id    text not null,
+  user_name  text,
+  slots      jsonb default '[]'::jsonb,
+  updated_at timestamptz default now(),
+  primary key (plan_id, user_id)
+);
+
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),
 -- donc on autorise la clé publique "anon" à tout lire/écrire.
-alter table public.nukes        enable row level security;
-alter table public.formations   enable row level security;
-alter table public.categories   enable row level security;
-alter table public.nuke_history enable row level security;
+alter table public.nukes             enable row level security;
+alter table public.formations        enable row level security;
+alter table public.categories        enable row level security;
+alter table public.nuke_history      enable row level security;
+alter table public.plans             enable row level security;
+alter table public.plan_availability enable row level security;
 
-drop policy if exists "anon all nukes"        on public.nukes;
-drop policy if exists "anon all formations"   on public.formations;
-drop policy if exists "anon all categories"   on public.categories;
-drop policy if exists "anon all nuke_history" on public.nuke_history;
+drop policy if exists "anon all nukes"             on public.nukes;
+drop policy if exists "anon all formations"        on public.formations;
+drop policy if exists "anon all categories"        on public.categories;
+drop policy if exists "anon all nuke_history"      on public.nuke_history;
+drop policy if exists "anon all plans"             on public.plans;
+drop policy if exists "anon all plan_availability" on public.plan_availability;
 
-create policy "anon all nukes"        on public.nukes        for all using (true) with check (true);
-create policy "anon all formations"   on public.formations   for all using (true) with check (true);
-create policy "anon all categories"   on public.categories   for all using (true) with check (true);
-create policy "anon all nuke_history" on public.nuke_history for all using (true) with check (true);
+create policy "anon all nukes"             on public.nukes             for all using (true) with check (true);
+create policy "anon all formations"        on public.formations        for all using (true) with check (true);
+create policy "anon all categories"        on public.categories        for all using (true) with check (true);
+create policy "anon all nuke_history"      on public.nuke_history      for all using (true) with check (true);
+create policy "anon all plans"             on public.plans             for all using (true) with check (true);
+create policy "anon all plan_availability" on public.plan_availability for all using (true) with check (true);
 
 -- ---------- Stockage des fichiers (buckets publics) ----------
 insert into storage.buckets (id, name, public) values ('targets', 'targets', true)
