@@ -752,8 +752,10 @@ function buildPlanMessage(plan, avail) {
 
   var gridLines = slots.map(function (s, i) {
     var c = counts[i].length;
+    // Noms des dispos de ce créneau (avec 🦋 le cas échéant) ; rien si personne.
+    var who = c ? " — " + counts[i].map(decorateName).join(", ") : "";
     return "`" + padEndStr(s, 6) + "` " + planBar(c, max) + " **" + c + "**" +
-      (i === bestIdx ? "  ← best" : "");
+      (i === bestIdx ? "  ← best" : "") + who;
   });
   var grid = "\n🕒 **Availability (game time)** — " + voters + " player" +
     (voters === 1 ? "" : "s") + " voted\n" +
