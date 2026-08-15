@@ -2,16 +2,16 @@
    VARIANTS — choisit le MEILLEUR plan dans le fichier de
    variantes du bot (⚔️ Dist "X" → 12345 … [Variant N (K attacks)]).
 
-   Le bot propose des dizaines/centaines de variantes générées avec
-   SA fenêtre (souvent 20 s). Le site, lui, synchronise dans une
-   fenêtre de tir plus serrée (optimizer.js). Ce module fait le pont :
+   Le bot propose des dizaines/centaines de variantes, DÉJÀ générées
+   avec ses propres restrictions temporelles. On ne re-filtre donc pas
+   sur le temps ici : ce serait écarter des plans que le bot juge
+   tenables. Ce module se contente de choisir DANS ce qu'il propose :
 
      1. il découpe le fichier en variantes (tableaux ASCII) ;
      2. pour chaque variante il teste les SOUS-ENSEMBLES de joueurs
-        (retirer 1-2 lignes suffit souvent à rendre le plan tenable —
-        et c'est aussi comme ça qu'on élimine un joueur en double) ;
-     3. il ne garde que les plans que optimizer.js valide SANS aucune
-        alerte : tout le monde dans la fenêtre, un capi qui ferme ;
+        (c'est comme ça qu'on élimine un joueur en double, ou qu'on
+        respecte "un capitaine en dernier") ;
+     3. il ne garde que les plans que optimizer.js valide sans alerte ;
      4. il classe et renvoie les meilleurs.
 
    Mesuré sur un vrai fichier de 62 variantes : piocher n'importe
@@ -99,6 +99,13 @@
 
   /* ---------- Recherche --------------------------------------------- */
 
+  // Par défaut AUCUNE contrainte de temps : le fichier du bot est déjà généré
+  // avec ses propres restrictions temporelles, en rajouter une reviendrait à
+  // écarter des plans que le bot juge tenables. Une fenêtre assez large pour
+  // que optimizer.js ne comprime jamais rien = il ne reste que les vraies
+  // règles (un capitaine en dernier, marches lisibles).
+  var NO_TIME_LIMIT = 99999;
+
   function defaults(opts) {
     opts = opts || {};
     return {
@@ -106,7 +113,7 @@
       attacks: opts.attacks || 0,            // K, pour "min" et "exact"
       minArmies: opts.minArmies == null ? 2 : opts.minArmies,
       minCaps: opts.minCaps == null ? 1 : opts.minCaps,
-      fireWindow: opts.fireWindow || 8,
+      fireWindow: opts.fireWindow || NO_TIME_LIMIT,
       uniquePlayers: opts.uniquePlayers !== false,
       include: opts.include || [],           // joueurs OBLIGATOIRES
       only: opts.only || null,               // si non vide : piocher UNIQUEMENT là-dedans
@@ -258,23 +265,9 @@
     };
   }
 
-  // Rien trouvé ? Renvoie la plus petite fenêtre de tir qui donnerait un plan.
-  // (Cas fréquent : le bot génère en 20 s, le site cherche en 8 s.)
-  function suggestWindow(parsed, options) {
-    var o = defaults(options);
-    var ladder = [10, 12, 14, 16, 18, 20, 25, 30];
-    for (var i = 0; i < ladder.length; i++) {
-      if (ladder[i] <= o.fireWindow) continue;
-      var probe = search(parsed, extend(o, { fireWindow: ladder[i], limit: 1 }));
-      if (probe.total) return { window: ladder[i], total: probe.total };
-    }
-    return null;
-  }
-
   window.VariantPicker = {
     parseFile: parseFile,
     playerList: playerList,
     search: search,
-    suggestWindow: suggestWindow,
   };
 })();

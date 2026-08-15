@@ -1306,7 +1306,6 @@
     attacks: 6,
     minArmies: 2,
     minCaps: 1,
-    fireWindow: 8,
     unique: true,      // un joueur ne peut pas apparaître deux fois dans le plan
     include: [],       // joueurs imposés (les "connectés")
     exclude: [],       // joueurs écartés de la recherche
@@ -1320,7 +1319,6 @@
       attacks: picker.attacks,
       minArmies: picker.minArmies,
       minCaps: picker.minCaps,
-      fireWindow: picker.fireWindow,
       uniquePlayers: picker.unique,
       include: picker.include,
       exclude: picker.exclude,
@@ -1432,8 +1430,6 @@
   }
 
   function pickerFiltersHtml() {
-    var windows = [[8, "8s"], [10, "10s"], [12, "12s"], [14, "14s"],
-                   [16, "16s"], [18, "18s"], [20, "20s"], [25, "25s"]];
     var modes = [["max", "Largest possible"], ["min", "At least…"], ["exact", "Exactly…"]];
     var needK = picker.mode !== "max";
     return '<div class="vp-filters">' +
@@ -1441,24 +1437,15 @@
       (needK ? '<label class="vp-f"><span>How many</span>' + num("vp-attacks", picker.attacks, 2, 20) + "</label>" : "") +
       '<label class="vp-f"><span>Min armies</span>' + num("vp-armies", picker.minArmies, 0, 20) + "</label>" +
       '<label class="vp-f"><span>Min caps</span>' + num("vp-caps", picker.minCaps, 0, 20) + "</label>" +
-      '<label class="vp-f"><span>Fire window</span>' + sel("vp-window", picker.fireWindow, windows) + "</label>" +
       // Décoché : un joueur peut fournir deux armées au même plan. Ça ouvre
       // beaucoup plus de plans (49 variantes sur 62 contiennent un doublon),
       // au prix de mobiliser deux fois la même personne.
       '<label class="vp-f check"><input type="checkbox" id="vp-unique"' +
         (picker.unique ? " checked" : "") + "><span>No duplicate player</span></label>" +
-      // La "fire window" est le réglage le moins évident : on l'explique sur
-      // place, sinon personne dans la guilde ne saura quoi en faire.
-      '<p class="vp-hint">' + ic("info") +
-        " <b>Fire window</b> = the gap between the first and the last player pressing send. " +
-        "Everyone fires when the shared countdown reaches their own march time, so this is " +
-        "really <b>how far apart your players' march times may be</b>. Narrow (8s) keeps few " +
-        "attackers; wide (20s) lets many more join." +
-        (picker.parsed && picker.parsed.sourceWindow
-          ? " Your bot generated this file with a <b>" + picker.parsed.sourceWindow +
-            "s</b> window — asking for less means dropping the stragglers."
-          : "") +
-      "</p>" +
+      // Pas de filtre de temps ici : le fichier du bot porte déjà SES
+      // restrictions temporelles, en rajouter une par-dessus ne ferait que
+      // jeter des plans que le bot juge tenables. L'écart de tir réel de
+      // chaque plan reste affiché dans ses statistiques, à titre indicatif.
       "</div>";
   }
 
@@ -1481,7 +1468,6 @@
     on("vp-attacks", function (e) { picker.attacks = Math.max(2, parseInt(e.value, 10) || 2); });
     on("vp-armies", function (e) { picker.minArmies = Math.max(0, parseInt(e.value, 10) || 0); });
     on("vp-caps", function (e) { picker.minCaps = Math.max(0, parseInt(e.value, 10) || 0); });
-    on("vp-window", function (e) { picker.fireWindow = parseInt(e.value, 10) || 8; });
     on("vp-unique", function (e) { picker.unique = e.checked; });
   }
 
@@ -1526,14 +1512,9 @@
     var out = pickerSearch();
 
     if (!out.total) {
-      var hint = VariantPicker.suggestWindow(picker.parsed, pickerOpts());
       return '<div class="vp-none">' + ic("search-x") +
         " <b>No plan matches these filters.</b><br>" +
-        (hint
-          ? "With a <b>" + hint.window + "s</b> fire window there would be <b>" + hint.total +
-            '</b>. <button class="btn small" id="vp-widen" data-w="' + hint.window + '">' +
-            "Widen to " + hint.window + "s</button>"
-          : "Try a wider fire window, fewer attacks, or fewer required players.") +
+        "Try fewer attacks, fewer required players, or allow a duplicate player." +
         "</div>";
     }
 
@@ -1577,12 +1558,6 @@
   }
 
   function bindPickerResults(rerenderFn) {
-    var widen = document.getElementById("vp-widen");
-    if (widen) widen.onclick = function () {
-      picker.fireWindow = parseInt(widen.dataset.w, 10) || picker.fireWindow;
-      rerenderFn();
-    };
-
     if (!picker.parsed) return;
     var out = pickerSearch();
     function planByKey(k) {

@@ -113,22 +113,12 @@ function show(title, out) {
 
 /* --- 2. MODULE 1 : la meilleure nuke possible ---------------------- */
 line("=== 2. MODULE 1 — meilleure nuke (max d'attaques, joueurs uniques) ===");
-show("  W = 8s (reglage actuel du site)",
-  VP.search(parsed, { mode: "max", fireWindow: 8, minArmies: 2, minCaps: 1 }));
-show("  W = 20s (fenetre du bot)",
-  VP.search(parsed, { mode: "max", fireWindow: 20, minArmies: 2, minCaps: 1 }));
+show("  reglages par defaut, AUCUNE contrainte de temps ajoutee",
+  VP.search(parsed, { mode: "max", minArmies: 2, minCaps: 1 }));
 
-/* --- 3. Taille imposee + suggestion de fenetre --------------------- */
+/* --- 3. Taille imposee --------------------------------------------- */
 line("=== 3. TAILLE IMPOSEE : exactement 7 attaques ===");
-var seven = VP.search(parsed, { mode: "exact", attacks: 7, fireWindow: 8 });
-show("  W = 8s", seven);
-if (!seven.total) {
-  var hint = VP.suggestWindow(parsed, { mode: "exact", attacks: 7, fireWindow: 8 });
-  line("  suggestion : " + (hint
-    ? "passer la fenetre a " + hint.window + "s -> " + hint.total + " plans"
-    : "aucune fenetre testee ne donne de plan"));
-  line("");
-}
+show("  exactement 7", VP.search(parsed, { mode: "exact", attacks: 7 }));
 
 /* --- 4. MODULE 2 : recherche par joueurs connectes ----------------- */
 line("=== 4. MODULE 2 — recherche intelligente (joueurs imposes) ===");
@@ -142,17 +132,17 @@ var trio = (function () {
   return out;
 })();
 line("  joueurs connectes imposes : " + trio.join(", "));
-show("  W = 20s, ces 3 obligatoires",
-  VP.search(parsed, { mode: "max", fireWindow: 20, include: trio, minArmies: 2, minCaps: 1 }));
+show("  ces 3 obligatoires",
+  VP.search(parsed, { mode: "max", include: trio, minArmies: 2, minCaps: 1 }));
 
 var duo = [pl[0], pl[1]];
 line("  autre essai, 2 imposes : " + duo.join(", "));
-show("  W = 16s",
-  VP.search(parsed, { mode: "max", fireWindow: 16, include: duo, minArmies: 2, minCaps: 1 }));
+show("  ces 2 obligatoires",
+  VP.search(parsed, { mode: "max", include: duo, minArmies: 2, minCaps: 1 }));
 
 /* --- 5. Verification de la regle "joueurs uniques" ----------------- */
 line("=== 5. CONTROLE : aucun doublon dans les plans rendus ===");
-var big = VP.search(parsed, { mode: "max", fireWindow: 20, limit: 200 });
+var big = VP.search(parsed, { mode: "max", limit: 200 });
 var bad = 0;
 for (var i = 0; i < big.plans.length; i++) {
   var seenN = {}, rows = big.plans[i].rows;
@@ -165,15 +155,13 @@ line("  plans controles : " + big.plans.length + "   doublons detectes : " + bad
 
 /* --- 6bis. Doublons AUTORISES (option demandee) -------------------- */
 line("");
-line("=== 6. DOUBLONS AUTORISES vs INTERDITS (meme fenetre) ===");
-[8, 16, 20].forEach(function (w) {
-  var strict = VP.search(parsed, { mode: "max", fireWindow: w, uniquePlayers: true, limit: 300 });
-  var loose = VP.search(parsed, { mode: "max", fireWindow: w, uniquePlayers: false, limit: 300 });
-  var bs = strict.plans.length ? strict.plans[0].attacks : 0;
-  var bl = loose.plans.length ? loose.plans[0].attacks : 0;
-  line("  W=" + pad(w + "s", 5) + " uniques : " + pad(strict.total, 5) + " plans, max " +
-       bs + " att.   |   doublons OK : " + pad(loose.total, 5) + " plans, max " + bl + " att.");
-});
+line("=== 6. DOUBLONS AUTORISES vs INTERDITS ===");
+var strict = VP.search(parsed, { mode: "max", uniquePlayers: true, limit: 300 });
+var loose = VP.search(parsed, { mode: "max", uniquePlayers: false, limit: 300 });
+line("  joueurs uniques  : " + pad(strict.total, 5) + " plans, max " +
+     (strict.plans.length ? strict.plans[0].attacks : 0) + " attaques");
+line("  doublons permis  : " + pad(loose.total, 5) + " plans, max " +
+     (loose.plans.length ? loose.plans[0].attacks : 0) + " attaques");
 line("");
 
 /* --- 6ter. EXCLUSION d'un joueur ----------------------------------- */

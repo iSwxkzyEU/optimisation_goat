@@ -704,7 +704,8 @@ td.impact { color: var(--green); }
   font-family: inherit; transition: background .13s, border-color .13s, color .13s;
 }
 .pchip:hover { background: var(--bg-3); color: var(--text); }
-.pchip.req { background: var(--accent-soft); border-color: rgba(255,94,58,.5); color: var(--accent); }
+/* Vert = joueur imposé (on le veut), rouge barré = joueur écarté */
+.pchip.req { background: rgba(65,209,139,.12); border-color: rgba(65,209,139,.5); color: var(--green); }
 .pchip-n { font-size: 10.5px; opacity: .65; font-weight: 700; }
 
 /* Résultats */
@@ -773,7 +774,7 @@ td.impact { color: var(--green); }
   text-transform: none; letter-spacing: 0; font-size: 11.5px; color: var(--faint);
 }
 .vp-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-.vp-legend .dot.req { background: var(--accent); margin-left: 4px; }
+.vp-legend .dot.req { background: var(--green); margin-left: 4px; }
 .vp-legend .dot.ban { background: var(--danger); margin-left: 10px; }
 .vp-legend em { font-style: normal; opacity: .7; margin-left: 12px; }
 .vp-players-head .btn { margin-left: 0; }
