@@ -114,7 +114,6 @@
     else if (name === "formations") renderFormations();
     else if (name === "history") renderHistory();
     else if (name === "best") renderBest();
-    else if (name === "smart") renderSmart();
     else if (name === "nuke") renderNukeDetail(param);
     // État actif des entrées fixes (les encarts sont gérés par renderSidebar)
     document.querySelectorAll(".sidebar-nav .nav-btn[data-route]").forEach(function (b) {
@@ -1294,13 +1293,16 @@
     refreshIcons();
   }
 
-  /* ---------- Sélecteur de variantes ------------------------------------
-     Le bot Discord peut proposer des centaines de variantes d'une même nuke,
-     générées avec SA fenêtre (souvent 20 s). Deux onglets lisent ce fichier :
-       · "Best nuke"    → le plus gros plan tenable, sans joueur en double ;
-       · "Smart search" → les plans qui utilisent les joueurs connectés.
-     Les deux partagent le fichier chargé, les filtres et le moteur
-     (js/variants.js). Le calcul est synchrone : quelques ms, même à 500
+  /* ---------- Sélecteur de variantes ("Best nuke") -----------------------
+     Le bot Discord peut proposer des centaines de variantes d'une même nuke.
+     Cet écran cherche dedans le meilleur plan jouable.
+
+     Un seul onglet, volontairement : "trouve-moi la plus grosse nuke" et
+     "trouve-moi une nuke avec ces 3 joueurs connectés" sont la MÊME
+     recherche, à un filtre près. En faire deux écrans ne créait qu'un
+     doublon à maintenir.
+
+     Le calcul (js/variants.js) est synchrone : quelques ms, même à 500
      variantes, donc les filtres se règlent en direct.                      */
 
   var picker = {
@@ -1654,20 +1656,18 @@
     });
   }
 
-  /* --- Onglet 1 : Best nuke --- */
-
   function renderBest() {
     el.view.innerHTML =
       '<div class="page-head"><h2>' + ic("crosshair") + " Best nuke</h2></div>" +
       '<p class="muted intro">Paste the bot\'s variants file: the site tests every ' +
         "combination of players inside each variant and keeps only the valid plans — " +
         "<b>no player twice</b>, and <b>a captain landing last</b>. Everyone fires at " +
-        "the same moment, so the <b>Time</b> column alone decides the order of impacts. " +
-        "Click a player to force them in, click again to rule them out.</p>" +
+        "the same moment, so the <b>Time</b> column alone decides the order of impacts.<br>" +
+        "Leave the players untouched to simply get the biggest plan. Click the ones who " +
+        "are <b>online</b> to require them, click again to <b>rule someone out</b>.</p>" +
       pickerImportHtml() +
       (picker.parsed
-        ? pickerPlayersHtml("Players — require or exclude") +
-          pickerFiltersHtml() + pickerResultsHtml()
+        ? pickerPlayersHtml() + pickerFiltersHtml() + pickerResultsHtml()
         : "");
 
     bindPickerImport(renderBest);
@@ -1677,14 +1677,11 @@
     refreshIcons();
   }
 
-  /* --- Onglet 2 : Smart search --- */
-
   // Pastilles joueurs à TROIS états, parcourus par clics successifs :
   //   neutre  → requis (le plan doit le contenir)
   //           → exclu (le plan ne doit pas le contenir)
   //           → neutre…
-  // Le même widget sert aux deux onglets, seul son titre change.
-  function pickerPlayersHtml(title) {
+  function pickerPlayersHtml() {
     var names = VariantPicker.playerList(picker.parsed);
     var chips = names.map(function (n) {
       var state = picker.include.indexOf(n) !== -1 ? " req"
@@ -1695,7 +1692,7 @@
 
     var touched = picker.include.length + picker.exclude.length;
     return '<div class="vp-players">' +
-        '<div class="vp-players-head"><span>' + esc(title) + "</span>" +
+        '<div class="vp-players-head"><span>Players</span>' +
           '<span class="vp-legend"><i class="dot req"></i>required' +
             '<i class="dot ban"></i>excluded<em>click a player to cycle</em></span>' +
           (picker.include.length
@@ -1741,24 +1738,6 @@
       picker.open = null;
       rerenderFn();
     };
-  }
-
-  function renderSmart() {
-    el.view.innerHTML =
-      '<div class="page-head"><h2>' + ic("user-check") + " Smart search</h2></div>" +
-      '<p class="muted intro">Pick the players who are online: the site returns only the ' +
-        "plans that use them. Click once to require a player, twice to exclude them. " +
-        "Same rules as Best nuke — no duplicate player, a captain lands last.</p>" +
-      pickerImportHtml() +
-      (picker.parsed
-        ? pickerPlayersHtml("Who is online?") + pickerFiltersHtml() + pickerResultsHtml()
-        : "");
-
-    bindPickerImport(renderSmart);
-    bindPickerPlayers(renderSmart);
-    bindPickerFilters(renderSmart);
-    bindPickerResults(renderSmart);
-    refreshIcons();
   }
 
   /* ---------- Câblage global ------------------------------------------- */
