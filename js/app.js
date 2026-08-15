@@ -1309,6 +1309,7 @@
     fireWindow: 8,
     unique: true,      // un joueur ne peut pas apparaître deux fois dans le plan
     include: [],       // joueurs imposés (les "connectés")
+    exclude: [],       // joueurs écartés de la recherche
     only: false,       // n'utiliser QUE les joueurs imposés
     open: null,        // clé du plan déplié dans le classement
   };
@@ -1322,6 +1323,7 @@
       fireWindow: picker.fireWindow,
       uniquePlayers: picker.unique,
       include: picker.include,
+      exclude: picker.exclude,
       only: picker.only && picker.include.length ? picker.include : null,
       limit: 10,
     };
@@ -1383,6 +1385,7 @@
     picker.token++;
     picker.open = null;
     picker.include = [];
+    picker.exclude = [];
     rerenderFn();
   }
 
@@ -1444,6 +1447,18 @@
       // au prix de mobiliser deux fois la même personne.
       '<label class="vp-f check"><input type="checkbox" id="vp-unique"' +
         (picker.unique ? " checked" : "") + "><span>No duplicate player</span></label>" +
+      // La "fire window" est le réglage le moins évident : on l'explique sur
+      // place, sinon personne dans la guilde ne saura quoi en faire.
+      '<p class="vp-hint">' + ic("info") +
+        " <b>Fire window</b> = the gap between the first and the last player pressing send. " +
+        "Everyone fires when the shared countdown reaches their own march time, so this is " +
+        "really <b>how far apart your players' march times may be</b>. Narrow (8s) keeps few " +
+        "attackers; wide (20s) lets many more join." +
+        (picker.parsed && picker.parsed.sourceWindow
+          ? " Your bot generated this file with a <b>" + picker.parsed.sourceWindow +
+            "s</b> window — asking for less means dropping the stragglers."
+          : "") +
+      "</p>" +
       "</div>";
   }
 
@@ -1644,11 +1659,16 @@
       '<div class="page-head"><h2>' + ic("crosshair") + " Best nuke</h2></div>" +
       '<p class="muted intro">Paste the bot\'s variants file: the site tests every ' +
         "combination of players inside each variant and keeps only the plans it can " +
-        "actually synchronize — <b>no player twice</b>, and <b>a captain landing last</b>.</p>" +
+        "actually synchronize — <b>no player twice</b>, and <b>a captain landing last</b>. " +
+        "Click a player to force them in, click again to rule them out.</p>" +
       pickerImportHtml() +
-      (picker.parsed ? pickerFiltersHtml() + pickerResultsHtml() : "");
+      (picker.parsed
+        ? pickerPlayersHtml("Players — require or exclude") +
+          pickerFiltersHtml() + pickerResultsHtml()
+        : "");
 
     bindPickerImport(renderBest);
+    bindPickerPlayers(renderBest);
     bindPickerFilters(renderBest);
     bindPickerResults(renderBest);
     refreshIcons();
@@ -1656,49 +1676,85 @@
 
   /* --- Onglet 2 : Smart search --- */
 
-  function pickerPlayersHtml() {
+  // Pastilles joueurs à TROIS états, parcourus par clics successifs :
+  //   neutre  → requis (le plan doit le contenir)
+  //           → exclu (le plan ne doit pas le contenir)
+  //           → neutre…
+  // Le même widget sert aux deux onglets, seul son titre change.
+  function pickerPlayersHtml(title) {
     var names = VariantPicker.playerList(picker.parsed);
     var chips = names.map(function (n) {
-      var on = picker.include.indexOf(n) !== -1;
-      return '<button class="pchip' + (on ? " req" : "") + '" data-player="' + esc(n) + '">' +
+      var state = picker.include.indexOf(n) !== -1 ? " req"
+                : picker.exclude.indexOf(n) !== -1 ? " ban" : "";
+      return '<button class="pchip' + state + '" data-player="' + esc(n) + '">' +
         esc(n) + '<span class="pchip-n">' + picker.parsed.players[n] + "</span></button>";
     }).join("");
+
+    var touched = picker.include.length + picker.exclude.length;
     return '<div class="vp-players">' +
-        '<div class="vp-players-head"><span>Who is online?</span>' +
-          '<label class="vp-only"><input type="checkbox" id="vp-onlyck"' +
-            (picker.only ? " checked" : "") + "> Use only these players</label>" +
-          (picker.include.length ? '<button class="btn ghost small" id="vp-clear">Clear</button>' : "") +
+        '<div class="vp-players-head"><span>' + esc(title) + "</span>" +
+          '<span class="vp-legend"><i class="dot req"></i>required' +
+            '<i class="dot ban"></i>excluded<em>click a player to cycle</em></span>' +
+          (picker.include.length
+            ? '<label class="vp-only"><input type="checkbox" id="vp-onlyck"' +
+              (picker.only ? " checked" : "") + "> Use only the required ones</label>"
+            : "") +
+          (touched ? '<button class="btn ghost small" id="vp-clear">Clear</button>' : "") +
         "</div>" +
         '<div class="pchips">' + chips + "</div>" +
       "</div>";
+  }
+
+  function bindPickerPlayers(rerenderFn) {
+    el.view.querySelectorAll("[data-player]").forEach(function (b) {
+      b.onclick = function () {
+        var n = b.dataset.player;
+        var i = picker.include.indexOf(n);
+        var j = picker.exclude.indexOf(n);
+        if (i !== -1) {                       // requis -> exclu
+          picker.include.splice(i, 1);
+          picker.exclude.push(n);
+        } else if (j !== -1) {                // exclu -> neutre
+          picker.exclude.splice(j, 1);
+        } else {                              // neutre -> requis
+          picker.include.push(n);
+        }
+        picker.open = null;
+        rerenderFn();
+      };
+    });
+
+    var only = document.getElementById("vp-onlyck");
+    if (only) only.onchange = function () {
+      picker.only = only.checked;
+      picker.open = null;
+      rerenderFn();
+    };
+
+    var clear = document.getElementById("vp-clear");
+    if (clear) clear.onclick = function () {
+      picker.include = [];
+      picker.exclude = [];
+      picker.open = null;
+      rerenderFn();
+    };
   }
 
   function renderSmart() {
     el.view.innerHTML =
       '<div class="page-head"><h2>' + ic("user-check") + " Smart search</h2></div>" +
       '<p class="muted intro">Pick the players who are online: the site returns only the ' +
-        "plans that use them. Same rules as Best nuke — no duplicate player, a captain lands last.</p>" +
+        "plans that use them. Click once to require a player, twice to exclude them. " +
+        "Same rules as Best nuke — no duplicate player, a captain lands last.</p>" +
       pickerImportHtml() +
-      (picker.parsed ? pickerPlayersHtml() + pickerFiltersHtml() + pickerResultsHtml() : "");
+      (picker.parsed
+        ? pickerPlayersHtml("Who is online?") + pickerFiltersHtml() + pickerResultsHtml()
+        : "");
 
     bindPickerImport(renderSmart);
+    bindPickerPlayers(renderSmart);
     bindPickerFilters(renderSmart);
     bindPickerResults(renderSmart);
-
-    el.view.querySelectorAll("[data-player]").forEach(function (b) {
-      b.onclick = function () {
-        var n = b.dataset.player;
-        var i = picker.include.indexOf(n);
-        if (i === -1) picker.include.push(n); else picker.include.splice(i, 1);
-        picker.open = null;
-        renderSmart();
-      };
-    });
-    var only = document.getElementById("vp-onlyck");
-    if (only) only.onchange = function () { picker.only = only.checked; picker.open = null; renderSmart(); };
-    var clear = document.getElementById("vp-clear");
-    if (clear) clear.onclick = function () { picker.include = []; picker.open = null; renderSmart(); };
-
     refreshIcons();
   }
 

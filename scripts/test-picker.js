@@ -75,7 +75,15 @@ function line(s) { WScript.Echo(s); }
 function pad(s, n) { s = "" + s; while (s.length < n) s += " "; return s; }
 
 /* --- 1. Parsing ---------------------------------------------------- */
-var parsed = VP.parseFile(readUtf8(BASE + "\\all_variants.txt"));
+// Le vrai fichier de la guilde (all_variants.txt) n'est pas dans le depot :
+// il contient des pseudos. On l'utilise s'il est la, sinon on retombe sur le
+// jeu d'essai synthetique, pour que le test tourne toujours.
+var REAL = BASE + "\\all_variants.txt";
+var DATA = fso.FileExists(REAL) ? REAL : BASE + "\\scripts\\fixture-variants.txt";
+WScript.Echo("Donnees : " + (DATA === REAL ? "all_variants.txt (reel)" : "fixture-variants.txt (synthetique)"));
+WScript.Echo("");
+
+var parsed = VP.parseFile(readUtf8(DATA));
 
 line("=== 1. PARSING ===");
 line("  cible          : " + parsed.target + "   joueur : " + parsed.targetPlayer);
@@ -124,12 +132,20 @@ if (!seven.total) {
 
 /* --- 4. MODULE 2 : recherche par joueurs connectes ----------------- */
 line("=== 4. MODULE 2 — recherche intelligente (joueurs imposes) ===");
-var trio = ["Mastersnidel", "Dosz-HU", "Warlock IV"];
+// Noms pris dans les donnees chargees (le test doit marcher sur les deux
+// jeux) : 3 joueurs distincts de la 1re variante, donc surs de coexister.
+var trio = (function () {
+  var out = [], rows = parsed.variants[0].rows;
+  for (var i = 0; i < rows.length && out.length < 3; i++) {
+    if (out.indexOf(rows[i].name) === -1) out.push(rows[i].name);
+  }
+  return out;
+})();
 line("  joueurs connectes imposes : " + trio.join(", "));
 show("  W = 20s, ces 3 obligatoires",
   VP.search(parsed, { mode: "max", fireWindow: 20, include: trio, minArmies: 2, minCaps: 1 }));
 
-var duo = ["Gandalf47", "r3wy"];
+var duo = [pl[0], pl[1]];
 line("  autre essai, 2 imposes : " + duo.join(", "));
 show("  W = 16s",
   VP.search(parsed, { mode: "max", fireWindow: 16, include: duo, minArmies: 2, minCaps: 1 }));
@@ -160,7 +176,34 @@ line("=== 6. DOUBLONS AUTORISES vs INTERDITS (meme fenetre) ===");
 });
 line("");
 
-/* --- 7. Controle "capi en dernier" --------------------------------- */
+/* --- 6ter. EXCLUSION d'un joueur ----------------------------------- */
+line("=== 7. EXCLUSION (chercher une nuke SANS tel joueur) ===");
+var banned = pl[0];   // le joueur le plus present : l'exclusion se voit bien
+var kept = pl[1];
+var before = VP.search(parsed, { mode: "max", fireWindow: 20, limit: 300 });
+var after = VP.search(parsed, { mode: "max", fireWindow: 20, exclude: [banned], limit: 300 });
+line("  sans filtre        : " + before.total + " plans");
+line("  en excluant " + pad(banned, 10) + ": " + after.total + " plans");
+var leak = 0;
+for (var x = 0; x < after.plans.length; x++) {
+  var rws = after.plans[x].rows;
+  for (var y = 0; y < rws.length; y++) if (rws[y].name === banned) leak++;
+}
+line("  fuites (" + banned + " encore present) : " + leak);
+
+// Exclusion + joueur impose en meme temps
+var combo = VP.search(parsed, {
+  mode: "max", fireWindow: 20, include: [kept], exclude: [banned], limit: 300
+});
+line("  " + kept + " impose + " + banned + " exclu : " + combo.total + " plans");
+if (combo.plans.length) {
+  line("     ex. " + combo.plans[0].rows.map(function (r) {
+    return r.name + (r.type === "cap" ? "*" : "");
+  }).join(", "));
+}
+line("");
+
+/* --- 8. Controle "capi en dernier" --------------------------------- */
 var noCapLast = 0;
 for (var i2 = 0; i2 < big.plans.length; i2++) {
   var rr = big.plans[i2].res.rows;

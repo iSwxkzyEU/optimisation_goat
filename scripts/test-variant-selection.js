@@ -187,7 +187,18 @@ function padL(s, n) { s = "" + s; while (s.length < n) s = " " + s; return s; }
 
 /* --- Execution ----------------------------------------------------- */
 var W = 8; // fenetre de tir du site (optimizer.js MAX_WINDOW)
-var variants = parseVariants(readUtf8(BASE + "\\all_variants.txt"));
+
+// Le vrai fichier de la guilde n'est pas dans le depot (il contient des
+// pseudos). Les chiffres publies venaient de lui ; sans lui on retombe sur
+// le jeu d'essai, qui ne prouve que le bon fonctionnement du code.
+var REAL = BASE + "\\all_variants.txt";
+var DATA = fso.FileExists(REAL) ? REAL : BASE + "\\scripts\\fixture-variants.txt";
+if (DATA !== REAL) {
+  WScript.Echo("!! all_variants.txt absent -> jeu d'essai synthetique.");
+  WScript.Echo("   Les comparaisons restent valables, les VOLUMES non.");
+  WScript.Echo("");
+}
+var variants = parseVariants(readUtf8(DATA));
 
 WScript.Echo("Variantes lues : " + variants.length + "   |   fenetre de tir W = " + W + "s");
 WScript.Echo("");

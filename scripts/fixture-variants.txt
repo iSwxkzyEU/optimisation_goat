@@ -1,0 +1,63 @@
+Jeu d'essai pour les scripts de test (format du bot Discord).
+Noms fictifs : le vrai fichier de la guilde n'a pas a vivre dans le depot.
+Chaque variante est concue pour exercer une regle precise.
+
+Variante 1 : marches serrees (6s) MAIS le joueur Alpha y figure deux fois
+             -> en mode "joueurs uniques" elle doit tomber a 6 attaques.
+
+⚔️ Dist "TESTGUILD" → 10001 (all, window 20s) [Variant 1 (7 attacks)]
++---------------+------+------+--------+
+|       ID      | Type | Card |  Time  |
++---------------+------+------+--------+
+|  101[Alpha]   | army |  x4  | 20m00s |
+|  102[Bravo]   | army |  x3  | 20m02s |
+| 103[Charlie]  | army |  x5  | 20m03s |
+|  104[Alpha]   | army |  x2  | 20m04s |
+|  105[Delta]   | cap  |  x5  | 20m04s |
+|  106[Echo]    | cap  |  x4  | 20m05s |
+| 107[Foxtrot]  | cap  | none | 20m06s |
++---------------+------+------+--------+
+
+Variante 2 : marches etalees sur 20s -> injouable a 8s de fenetre de tir,
+             jouable a 20s. C'est le cas qui justifie le selecteur.
+
+⚔️ Dist "TESTGUILD" → 10001 (all, window 20s) [Variant 2 (6 attacks)]
++---------------+------+------+--------+
+|       ID      | Type | Card |  Time  |
++---------------+------+------+--------+
+|  201[Golf]    | army |  x4  | 45m00s |
+|  202[Hotel]   | army |  x3  | 45m06s |
+|  203[India]   | army |  x5  | 45m12s |
+| 204[Juliett]  | cap  |  x5  | 45m14s |
+|  205[Kilo]    | cap  |  x4  | 45m18s |
+|  206[Lima]    | cap  |  x3  | 45m20s |
++---------------+------+------+--------+
+
+Variante 3 : aucun capitaine -> ne doit JAMAIS produire de plan valide,
+             quelle que soit la fenetre.
+
+⚔️ Dist "TESTGUILD" → 10001 (all, window 20s) [Variant 3 (5 attacks)]
++---------------+------+------+--------+
+|       ID      | Type | Card |  Time  |
++---------------+------+------+--------+
+|  301[Mike]    | army |  x4  | 10m00s |
+| 302[November] | army |  x3  | 10m01s |
+|  303[Oscar]   | army |  x5  | 10m02s |
+|  304[Papa]    | army |  x4  | 10m03s |
+|  305[Quebec]  | army |  x2  | 10m04s |
++---------------+------+------+--------+
+
+Variante 4 : propre et serree, sert aux tests "joueur impose / exclu"
+             (contient Bravo, Golf, Charlie, Delta, Echo, Hotel).
+
+⚔️ Dist "TESTGUILD" → 10001 (all, window 20s) [Variant 4 (6 attacks)]
++---------------+------+------+--------+
+|       ID      | Type | Card |  Time  |
++---------------+------+------+--------+
+|  401[Bravo]   | army |  x4  | 33m00s |
+|  402[Golf]    | army |  x3  | 33m01s |
+| 403[Charlie]  | army |  x5  | 33m02s |
+|  404[Delta]   | cap  |  x5  | 33m03s |
+|  405[Echo]    | cap  |  x4  | 33m04s |
+|  406[Hotel]   | army |  x2  | 33m05s |
++---------------+------+------+--------+

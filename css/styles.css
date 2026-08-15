@@ -761,3 +761,31 @@ td.impact { color: var(--green); }
   .vp-row-meta { display: none; }
   .vp-winner-head .muted { margin-left: 0; flex-basis: 100%; }
 }
+
+/* Pastille "joueur exclu" + légende des 3 états */
+.pchip.ban {
+  background: rgba(255,93,87,.10); border-color: rgba(255,93,87,.42);
+  color: var(--danger); text-decoration: line-through; text-decoration-thickness: 1.5px;
+}
+.pchip.ban .pchip-n { text-decoration: none; }
+.vp-legend {
+  display: inline-flex; align-items: center; gap: 6px; margin-right: auto;
+  text-transform: none; letter-spacing: 0; font-size: 11.5px; color: var(--faint);
+}
+.vp-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.vp-legend .dot.req { background: var(--accent); margin-left: 4px; }
+.vp-legend .dot.ban { background: var(--danger); margin-left: 10px; }
+.vp-legend em { font-style: normal; opacity: .7; margin-left: 12px; }
+.vp-players-head .btn { margin-left: 0; }
+
+/* Explication de la fire window, sous les filtres */
+.vp-hint {
+  flex-basis: 100%; margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.6; color: var(--muted);
+}
+.vp-hint b { color: var(--text); }
+.vp-hint svg.lucide { width: 14px; height: 14px; vertical-align: -2px; margin-right: 5px; color: var(--blue); }
+
+@media (max-width: 860px) {
+  .vp-legend { margin-right: 0; flex-basis: 100%; }
+}
