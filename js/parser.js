@@ -196,5 +196,28 @@
     };
   }
 
-  window.NukeParser = { parseNuke: parseNuke };
+  // Parse un bloc de lignes formant UN tableau ASCII -> liste de participants.
+  // (bordures + ligne d'en-tête ignorées, comme dans parseNuke)
+  // Utilisé par le sélecteur de variantes, qui découpe un fichier en N tableaux.
+  function parseTableBlock(lines) {
+    var kept = (lines || [])
+      .map(function (l) { return String(l).trim(); })
+      .filter(function (l) { return l && isParticipantLine(l); })
+      .map(stripOuterPipes)
+      .filter(Boolean);
+
+    var cols = null;
+    kept.forEach(function (l) {
+      if (!cols && isTableHeader(l)) {
+        cols = l.split("|").map(function (c) { return c.trim().toLowerCase(); });
+      }
+    });
+
+    return kept
+      .filter(function (l) { return !isTableHeader(l); })
+      .map(function (l) { return cols ? parseMappedParticipant(l, cols) : parseParticipant(l); })
+      .filter(function (p) { return p.name || p.id; });
+  }
+
+  window.NukeParser = { parseNuke: parseNuke, parseTableBlock: parseTableBlock };
 })();

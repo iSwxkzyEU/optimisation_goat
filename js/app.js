@@ -113,6 +113,8 @@
     else if (name === "unsorted") renderUnsorted();
     else if (name === "formations") renderFormations();
     else if (name === "history") renderHistory();
+    else if (name === "best") renderBest();
+    else if (name === "smart") renderSmart();
     else if (name === "nuke") renderNukeDetail(param);
     // État actif des entrées fixes (les encarts sont gérés par renderSidebar)
     document.querySelectorAll(".sidebar-nav .nav-btn[data-route]").forEach(function (b) {
@@ -1284,6 +1286,419 @@
           .then(function () { renderFormations(); }).catch(showErr);
       };
     });
+    refreshIcons();
+  }
+
+  /* ---------- Sélecteur de variantes ------------------------------------
+     Le bot Discord peut proposer des centaines de variantes d'une même nuke,
+     générées avec SA fenêtre (souvent 20 s). Deux onglets lisent ce fichier :
+       · "Best nuke"    → le plus gros plan tenable, sans joueur en double ;
+       · "Smart search" → les plans qui utilisent les joueurs connectés.
+     Les deux partagent le fichier chargé, les filtres et le moteur
+     (js/variants.js). Le calcul est synchrone : quelques ms, même à 500
+     variantes, donc les filtres se règlent en direct.                      */
+
+  var picker = {
+    parsed: null,
+    token: 0,          // change à chaque fichier chargé (invalide le cache)
+    error: "",
+    mode: "max",       // max | min | exact
+    attacks: 6,
+    minArmies: 2,
+    minCaps: 1,
+    fireWindow: 8,
+    unique: true,      // un joueur ne peut pas apparaître deux fois dans le plan
+    include: [],       // joueurs imposés (les "connectés")
+    only: false,       // n'utiliser QUE les joueurs imposés
+    open: null,        // clé du plan déplié dans le classement
+  };
+
+  function pickerOpts() {
+    return {
+      mode: picker.mode,
+      attacks: picker.attacks,
+      minArmies: picker.minArmies,
+      minCaps: picker.minCaps,
+      fireWindow: picker.fireWindow,
+      uniquePlayers: picker.unique,
+      include: picker.include,
+      only: picker.only && picker.include.length ? picker.include : null,
+      limit: 10,
+    };
+  }
+
+  // La recherche est relancée à chaque rendu : on la mémorise pour que
+  // déplier un plan ne recalcule pas tout.
+  var pickerCache = { key: "", out: null };
+
+  function pickerSearch() {
+    var o = pickerOpts();
+    var key = picker.token + "|" + JSON.stringify(o);
+    if (pickerCache.key === key && pickerCache.out) return pickerCache.out;
+    var out = VariantPicker.search(picker.parsed, o);
+    pickerCache = { key: key, out: out };
+    return out;
+  }
+
+  /* --- Import du fichier (bloc commun aux deux onglets) --- */
+
+  function pickerImportHtml() {
+    if (picker.parsed) {
+      var p = picker.parsed;
+      return '<div class="vp-loaded">' + ic("file-check") +
+        " <b>" + p.variants.length + "</b> variants loaded" +
+        (p.target ? " · target <b>" + esc(p.target) + "</b>" : "") +
+        (p.targetPlayer ? " <span class='muted'>(" + esc(p.targetPlayer) + ")</span>" : "") +
+        (p.sourceWindow ? " · bot window <b>" + p.sourceWindow + "s</b>" : "") +
+        '<button class="btn ghost small" id="vp-reset">' + ic("x") + " Change file</button></div>";
+    }
+    return '<div class="vp-import">' +
+      '<textarea id="vp-text" class="vp-text" placeholder="Paste the bot&#39;s variants file here…&#10;&#10;⚔️ Dist &quot;…&quot; → 12345 (all, window 20s) [Variant 1 (8 attacks)]&#10;+-----------+------+------+--------+&#10;|     ID    | Type | Card |  Time  |"></textarea>' +
+      '<div class="vp-import-foot">' +
+        '<label class="btn ghost">' + ic("upload") + " Choose a file" +
+          '<input type="file" id="vp-file" accept=".txt,.log,text/plain" hidden></label>' +
+        '<button class="btn primary" id="vp-go">' + ic("search") + " Analyze</button>" +
+      "</div>" +
+      (picker.error ? '<p class="vp-err">' + ic("alert-triangle") + " " + esc(picker.error) + "</p>" : "") +
+      "</div>";
+  }
+
+  function loadPickerText(text, rerenderFn) {
+    var parsed;
+    try {
+      parsed = VariantPicker.parseFile(text);
+    } catch (e) {
+      picker.error = "Could not read this file: " + (e && e.message ? e.message : e);
+      rerenderFn();
+      return;
+    }
+    if (!parsed.variants.length) {
+      picker.error = "No variant found. Expected the bot's format: " +
+        'a "[Variant N (K attacks)]" line followed by its ASCII table.';
+      rerenderFn();
+      return;
+    }
+    picker.parsed = parsed;
+    picker.error = "";
+    picker.token++;
+    picker.open = null;
+    picker.include = [];
+    rerenderFn();
+  }
+
+  function bindPickerImport(rerenderFn) {
+    var go = document.getElementById("vp-go");
+    if (go) go.onclick = function () {
+      var ta = document.getElementById("vp-text");
+      var txt = ta ? ta.value : "";
+      if (!txt.trim()) { picker.error = "Paste the file first (or pick it with the button)."; rerenderFn(); return; }
+      loadPickerText(txt, rerenderFn);
+    };
+
+    var file = document.getElementById("vp-file");
+    if (file) file.onchange = function (e) {
+      var f = e.target.files[0];
+      if (!f) return;
+      var r = new FileReader();
+      r.onload = function () { loadPickerText(String(r.result), rerenderFn); };
+      r.onerror = function () { picker.error = "Could not read the file."; rerenderFn(); };
+      r.readAsText(f);
+    };
+
+    var reset = document.getElementById("vp-reset");
+    if (reset) reset.onclick = function () {
+      picker.parsed = null;
+      picker.include = [];
+      picker.open = null;
+      rerenderFn();
+    };
+  }
+
+  /* --- Filtres --- */
+
+  function sel(id, value, options) {
+    return '<select id="' + id + '">' + options.map(function (o) {
+      return '<option value="' + esc(o[0]) + '"' +
+        (String(o[0]) === String(value) ? " selected" : "") + ">" + esc(o[1]) + "</option>";
+    }).join("") + "</select>";
+  }
+
+  function num(id, value, min, max) {
+    return '<input type="number" id="' + id + '" value="' + value +
+      '" min="' + min + '" max="' + max + '">';
+  }
+
+  function pickerFiltersHtml() {
+    var windows = [[8, "8s"], [10, "10s"], [12, "12s"], [14, "14s"],
+                   [16, "16s"], [18, "18s"], [20, "20s"], [25, "25s"]];
+    var modes = [["max", "Largest possible"], ["min", "At least…"], ["exact", "Exactly…"]];
+    var needK = picker.mode !== "max";
+    return '<div class="vp-filters">' +
+      '<label class="vp-f"><span>Attacks</span>' + sel("vp-mode", picker.mode, modes) + "</label>" +
+      (needK ? '<label class="vp-f"><span>How many</span>' + num("vp-attacks", picker.attacks, 2, 20) + "</label>" : "") +
+      '<label class="vp-f"><span>Min armies</span>' + num("vp-armies", picker.minArmies, 0, 20) + "</label>" +
+      '<label class="vp-f"><span>Min caps</span>' + num("vp-caps", picker.minCaps, 0, 20) + "</label>" +
+      '<label class="vp-f"><span>Fire window</span>' + sel("vp-window", picker.fireWindow, windows) + "</label>" +
+      // Décoché : un joueur peut fournir deux armées au même plan. Ça ouvre
+      // beaucoup plus de plans (49 variantes sur 62 contiennent un doublon),
+      // au prix de mobiliser deux fois la même personne.
+      '<label class="vp-f check"><input type="checkbox" id="vp-unique"' +
+        (picker.unique ? " checked" : "") + "><span>No duplicate player</span></label>" +
+      "</div>";
+  }
+
+  // Joueurs présents plus d'une fois dans un plan (quand les doublons sont permis).
+  function planDupes(p) {
+    var seen = {}, dupes = [];
+    p.rows.forEach(function (r) {
+      if (seen[r.name] && dupes.indexOf(r.name) === -1) dupes.push(r.name);
+      seen[r.name] = true;
+    });
+    return dupes;
+  }
+
+  function bindPickerFilters(rerenderFn) {
+    function on(id, fn) {
+      var e = document.getElementById(id);
+      if (e) e.onchange = function () { picker.open = null; fn(e); rerenderFn(); };
+    }
+    on("vp-mode", function (e) { picker.mode = e.value; });
+    on("vp-attacks", function (e) { picker.attacks = Math.max(2, parseInt(e.value, 10) || 2); });
+    on("vp-armies", function (e) { picker.minArmies = Math.max(0, parseInt(e.value, 10) || 0); });
+    on("vp-caps", function (e) { picker.minCaps = Math.max(0, parseInt(e.value, 10) || 0); });
+    on("vp-window", function (e) { picker.fireWindow = parseInt(e.value, 10) || 8; });
+    on("vp-unique", function (e) { picker.unique = e.checked; });
+  }
+
+  /* --- Rendu d'un plan --- */
+
+  function planStatsHtml(p) {
+    return '<div class="vp-stats">' +
+      '<span class="vp-stat"><b>' + p.attacks + "</b> attacks</span>" +
+      '<span class="vp-stat"><b>' + p.armies + "</b> armies</span>" +
+      '<span class="vp-stat"><b>' + p.caps + "</b> caps</span>" +
+      '<span class="vp-stat' + (p.spread <= 2 ? " good" : "") + '">spread <b>' + p.spread + "s</b></span>" +
+      '<span class="vp-stat">fire window <b>' + p.fire + "s</b></span>" +
+      '<span class="vp-stat">speed cards <b>' + p.cards + "</b></span>" +
+      '<span class="vp-stat faint">variant ' + p.variant + "</span>" +
+      (function () {
+        var d = planDupes(p);
+        return d.length
+          ? '<span class="vp-stat warn">' + ic("users") + " twice: <b>" +
+            esc(d.join(", ")) + "</b></span>"
+          : "";
+      })() +
+      "</div>";
+  }
+
+  function planTableHtml(p) {
+    var rows = p.res.rows.map(function (r) {
+      return "<tr><td>" + esc(r.id) + "</td><td class='strong'>" + esc(r.name) + "</td>" +
+        "<td><span class='tag tag-" + esc(r.type) + "'>" + esc(r.type) + "</span></td>" +
+        "<td>" + esc(r.qty) + "</td><td>" + esc(r.current) + "</td>" +
+        "<td class='strong impact'>" + esc(r.offset) + "</td>" +
+        "<td>" + esc(r.newTime) + "</td>" +
+        "<td><span class='form-type-badge'>" + esc(r.formation) + "</span></td></tr>";
+    }).join("");
+    return '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
+      "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
+      "<th>March</th><th>Fire @</th><th>Lands</th><th>Form.</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+  }
+
+  function pickerResultsHtml() {
+    if (!picker.parsed) return "";
+    var out = pickerSearch();
+
+    if (!out.total) {
+      var hint = VariantPicker.suggestWindow(picker.parsed, pickerOpts());
+      return '<div class="vp-none">' + ic("search-x") +
+        " <b>No plan matches these filters.</b><br>" +
+        (hint
+          ? "With a <b>" + hint.window + "s</b> fire window there would be <b>" + hint.total +
+            '</b>. <button class="btn small" id="vp-widen" data-w="' + hint.window + '">' +
+            "Widen to " + hint.window + "s</button>"
+          : "Try a wider fire window, fewer attacks, or fewer required players.") +
+        "</div>";
+    }
+
+    var best = out.plans[0];
+    var rest = out.plans.slice(1);
+
+    var list = rest.map(function (p, i) {
+      var opened = picker.open === p.key;
+      var who = p.rows.map(function (r) {
+        return "<span class='vp-who" + (r.type === "cap" ? " cap" : "") + "'>" + esc(r.name) + "</span>";
+      }).join("");
+      return '<div class="vp-row' + (opened ? " open" : "") + '" data-plan="' + esc(p.key) + '">' +
+          '<div class="vp-row-head">' +
+            '<span class="vp-rank">#' + (i + 2) + "</span>" +
+            '<span class="vp-row-who">' + who + "</span>" +
+            '<span class="vp-row-meta">' + p.attacks + " att · " + p.spread + "s · " +
+              p.fire + "s · V" + p.variant + "</span>" +
+            ic(opened ? "chevron-up" : "chevron-down") +
+          "</div>" +
+          (opened ? '<div class="vp-row-body">' + planStatsHtml(p) + planTableHtml(p) +
+            '<button class="btn primary small" data-create="' + esc(p.key) + '">' +
+            ic("plus") + " Create nuke from this plan</button></div>" : "") +
+        "</div>";
+    }).join("");
+
+    return '<div class="vp-results">' +
+        '<div class="vp-winner">' +
+          '<div class="vp-winner-head">' + ic("trophy") + " <h3>Best plan</h3>" +
+            '<span class="muted small">' + out.total + " valid plan" + (out.total > 1 ? "s" : "") +
+            " found · " + out.scanned + " combinations tested</span></div>" +
+          planStatsHtml(best) +
+          planTableHtml(best) +
+          '<div class="vp-winner-foot">' +
+            '<button class="btn primary" data-create="' + esc(best.key) + '">' +
+              ic("plus") + " Create nuke from this plan</button>" +
+            '<button class="btn ghost" id="vp-copy">' + ic("copy") + " Copy for Discord</button>" +
+          "</div>" +
+        "</div>" +
+        (rest.length ? '<h4 class="vp-sub">Runners-up</h4><div class="vp-list">' + list + "</div>" : "") +
+      "</div>";
+  }
+
+  function bindPickerResults(rerenderFn) {
+    var widen = document.getElementById("vp-widen");
+    if (widen) widen.onclick = function () {
+      picker.fireWindow = parseInt(widen.dataset.w, 10) || picker.fireWindow;
+      rerenderFn();
+    };
+
+    if (!picker.parsed) return;
+    var out = pickerSearch();
+    function planByKey(k) {
+      for (var i = 0; i < out.plans.length; i++) if (out.plans[i].key === k) return out.plans[i];
+      return null;
+    }
+
+    el.view.querySelectorAll("[data-plan]").forEach(function (row) {
+      row.querySelector(".vp-row-head").onclick = function () {
+        picker.open = picker.open === row.dataset.plan ? null : row.dataset.plan;
+        rerenderFn();
+      };
+    });
+
+    el.view.querySelectorAll("[data-create]").forEach(function (b) {
+      b.onclick = function (ev) {
+        ev.stopPropagation();
+        var p = planByKey(b.dataset.create);
+        if (p) createNukeFromPlan(p, b);
+      };
+    });
+
+    var copy = document.getElementById("vp-copy");
+    if (copy && out.plans.length) copy.onclick = function () {
+      var txt = optimizedAsciiTable(out.plans[0].res.rows);
+      navigator.clipboard.writeText(txt).then(function () {
+        copy.innerHTML = ic("check") + " Copied!";
+        refreshIcons();
+      }).catch(function () {
+        window.prompt("Copy manually (Ctrl+C):", txt);
+      });
+    };
+  }
+
+  // Transforme le plan retenu en vraie nuke enregistrée, puis ouvre sa fiche.
+  function createNukeFromPlan(plan, btn) {
+    var p = picker.parsed;
+    var nuke = {
+      target: p.target || "",
+      targetPlayer: p.targetPlayer || "",
+      categoryId: null,
+      priority: false,
+      targetImage: null,
+      variants: [{
+        label: "Auto · variant " + plan.variant,
+        side: "",
+        spread: plan.spread + " seconds",
+        firstLaunch: "",
+        raw: "",
+        participants: plan.res.rows.map(function (r) {
+          return {
+            id: r.id, name: r.name, type: r.type, qty: r.qty,
+            march: r.current, offset: r.offset, impact: r.newTime,
+            side: "", formation: r.formation,
+          };
+        }),
+      }],
+    };
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    Store.saveNuke(nuke).then(function (saved) {
+      route("nuke", saved.id);
+    }).catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = "Create nuke from this plan";
+      showErr(e);
+    });
+  }
+
+  /* --- Onglet 1 : Best nuke --- */
+
+  function renderBest() {
+    el.view.innerHTML =
+      '<div class="page-head"><h2>' + ic("crosshair") + " Best nuke</h2></div>" +
+      '<p class="muted intro">Paste the bot\'s variants file: the site tests every ' +
+        "combination of players inside each variant and keeps only the plans it can " +
+        "actually synchronize — <b>no player twice</b>, and <b>a captain landing last</b>.</p>" +
+      pickerImportHtml() +
+      (picker.parsed ? pickerFiltersHtml() + pickerResultsHtml() : "");
+
+    bindPickerImport(renderBest);
+    bindPickerFilters(renderBest);
+    bindPickerResults(renderBest);
+    refreshIcons();
+  }
+
+  /* --- Onglet 2 : Smart search --- */
+
+  function pickerPlayersHtml() {
+    var names = VariantPicker.playerList(picker.parsed);
+    var chips = names.map(function (n) {
+      var on = picker.include.indexOf(n) !== -1;
+      return '<button class="pchip' + (on ? " req" : "") + '" data-player="' + esc(n) + '">' +
+        esc(n) + '<span class="pchip-n">' + picker.parsed.players[n] + "</span></button>";
+    }).join("");
+    return '<div class="vp-players">' +
+        '<div class="vp-players-head"><span>Who is online?</span>' +
+          '<label class="vp-only"><input type="checkbox" id="vp-onlyck"' +
+            (picker.only ? " checked" : "") + "> Use only these players</label>" +
+          (picker.include.length ? '<button class="btn ghost small" id="vp-clear">Clear</button>' : "") +
+        "</div>" +
+        '<div class="pchips">' + chips + "</div>" +
+      "</div>";
+  }
+
+  function renderSmart() {
+    el.view.innerHTML =
+      '<div class="page-head"><h2>' + ic("user-check") + " Smart search</h2></div>" +
+      '<p class="muted intro">Pick the players who are online: the site returns only the ' +
+        "plans that use them. Same rules as Best nuke — no duplicate player, a captain lands last.</p>" +
+      pickerImportHtml() +
+      (picker.parsed ? pickerPlayersHtml() + pickerFiltersHtml() + pickerResultsHtml() : "");
+
+    bindPickerImport(renderSmart);
+    bindPickerFilters(renderSmart);
+    bindPickerResults(renderSmart);
+
+    el.view.querySelectorAll("[data-player]").forEach(function (b) {
+      b.onclick = function () {
+        var n = b.dataset.player;
+        var i = picker.include.indexOf(n);
+        if (i === -1) picker.include.push(n); else picker.include.splice(i, 1);
+        picker.open = null;
+        renderSmart();
+      };
+    });
+    var only = document.getElementById("vp-onlyck");
+    if (only) only.onchange = function () { picker.only = only.checked; picker.open = null; renderSmart(); };
+    var clear = document.getElementById("vp-clear");
+    if (clear) clear.onclick = function () { picker.include = []; picker.open = null; renderSmart(); };
+
     refreshIcons();
   }
 
