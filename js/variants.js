@@ -2,16 +2,22 @@
    VARIANTS — choisit le MEILLEUR plan dans le fichier de
    variantes du bot (⚔️ Dist "X" → 12345 … [Variant N (K attacks)]).
 
-   Le bot propose des dizaines/centaines de variantes, DÉJÀ générées
+   MODÈLE : TOUT LE MONDE TIRE EN MÊME TEMPS. Personne ne décale son
+   envoi — l'ordre d'arrivée est donc exactement l'ordre des temps de
+   marche. (À ne pas confondre avec optimize() de optimizer.js, qui
+   suppose un compte à rebours où chacun tire à SON instant.)
+
+   Le bot propose des dizaines/centaines de variantes, déjà générées
    avec ses propres restrictions temporelles. On ne re-filtre donc pas
-   sur le temps ici : ce serait écarter des plans que le bot juge
-   tenables. Ce module se contente de choisir DANS ce qu'il propose :
+   sur le temps : ce serait écarter des plans qu'il juge tenables.
+   Ce module se contente de choisir DANS ce qu'il propose :
 
      1. il découpe le fichier en variantes (tableaux ASCII) ;
      2. pour chaque variante il teste les SOUS-ENSEMBLES de joueurs
         (c'est comme ça qu'on élimine un joueur en double, ou qu'on
-        respecte "un capitaine en dernier") ;
-     3. il ne garde que les plans que optimizer.js valide sans alerte ;
+        obtient un capitaine en dernier) ;
+     3. il ne garde que ceux dont la marche la plus LONGUE est celle
+        d'un capitaine — sinon la nuke finirait sur une armée ;
      4. il classe et renvoie les meilleurs.
 
    Mesuré sur un vrai fichier de 62 variantes : piocher n'importe
@@ -22,7 +28,6 @@
 (function () {
   "use strict";
 
-  var CAP_GAP = 2;        // doit rester aligné sur optimizer.js
   var DEFAULT_LIMIT = 25;
 
   /* ---------- Parsing du fichier ------------------------------------ */
@@ -99,13 +104,6 @@
 
   /* ---------- Recherche --------------------------------------------- */
 
-  // Par défaut AUCUNE contrainte de temps : le fichier du bot est déjà généré
-  // avec ses propres restrictions temporelles, en rajouter une reviendrait à
-  // écarter des plans que le bot juge tenables. Une fenêtre assez large pour
-  // que optimizer.js ne comprime jamais rien = il ne reste que les vraies
-  // règles (un capitaine en dernier, marches lisibles).
-  var NO_TIME_LIMIT = 99999;
-
   function defaults(opts) {
     opts = opts || {};
     return {
@@ -113,7 +111,6 @@
       attacks: opts.attacks || 0,            // K, pour "min" et "exact"
       minArmies: opts.minArmies == null ? 2 : opts.minArmies,
       minCaps: opts.minCaps == null ? 1 : opts.minCaps,
-      fireWindow: opts.fireWindow || NO_TIME_LIMIT,
       uniquePlayers: opts.uniquePlayers !== false,
       include: opts.include || [],           // joueurs OBLIGATOIRES
       only: opts.only || null,               // si non vide : piocher UNIQUEMENT là-dedans
@@ -127,11 +124,6 @@
     for (var k in base) if (base.hasOwnProperty(k)) out[k] = base[k];
     for (var j in over) if (over.hasOwnProperty(j)) out[j] = over[j];
     return out;
-  }
-
-  // Instant de tir idéal : c'est sur cet axe que l'optimiseur resserre.
-  function idealA(p) {
-    return p.marchSec - (p.type === "cap" ? CAP_GAP : 0);
   }
 
   function hasName(rows, name) {
@@ -161,47 +153,99 @@
     })(0);
   }
 
-  // Un sous-ensemble devient un "plan" seulement s'il passe TOUT :
-  // quotas armées/capis, joueurs imposés, et zéro alerte de l'optimiseur
-  // (fenêtre de tir tenue + un capitaine en dernier impact).
+  // TOUT LE MONDE TIRE EN MÊME TEMPS. Personne ne décale son envoi, donc
+  // l'ordre d'arrivée est EXACTEMENT l'ordre des temps de marche : la marche
+  // la plus courte frappe en premier, la plus longue en dernier.
+  // Conséquence directe : "un capitaine en dernier" veut dire que la marche
+  // la plus LONGUE doit être celle d'un capitaine.
+  //
+  // À marche égale, l'armée est placée avant le capitaine : ils tombent
+  // ensemble, et un capi qui tombe AVEC les armées ne ferme pas la nuke.
+  function orderByArrival(subset) {
+    return subset.slice().sort(function (a, b) {
+      return a.marchSec - b.marchSec ||
+             (a.type === "cap" ? 1 : 0) - (b.type === "cap" ? 1 : 0);
+    });
+  }
+
+  // Formations déduites de l'ordre d'impact (cf. LOGIQUE-METIER.txt §6) :
+  //   1re armée à frapper = 90 · autres armées = 110
+  //   CAP qui frappe après TOUTES les armées = 50 · sinon (avec/avant) = 110
+  function withFormations(rows) {
+    var maxArmy = null;
+    rows.forEach(function (r) {
+      if (r.type !== "cap" && (maxArmy == null || r.marchSec > maxArmy)) maxArmy = r.marchSec;
+    });
+    var t0 = rows[0].marchSec;
+    var firstArmyDone = false;
+    return rows.map(function (r) {
+      var form;
+      if (r.type === "cap") {
+        form = (maxArmy != null && r.marchSec > maxArmy) ? "50" : "110";
+      } else if (!firstArmyDone) {
+        form = "90";
+        firstArmyDone = true;
+      } else {
+        form = "110";
+      }
+      return {
+        id: r.id, name: r.name, type: r.type, qty: r.qty,
+        march: r.march, marchSec: r.marchSec,
+        landsSec: r.marchSec - t0,          // écart d'impact avec le 1er coup
+        formation: form,
+      };
+    });
+  }
+
+  // Un sous-ensemble devient un "plan" seulement s'il passe TOUT : quotas
+  // armées/capis, joueurs imposés, et surtout un capitaine STRICTEMENT en
+  // dernier (aucune armée ne doit frapper aussi tard ou plus tard que lui).
   function evaluate(subset, variant, o) {
     var armies = 0, caps = 0, cards = 0, names = {}, i;
+    var maxArmy = null, maxCap = null;
+
     for (i = 0; i < subset.length; i++) {
       var p = subset[i];
-      if (p.type === "cap") caps++; else armies++;
+      if (p.type === "cap") {
+        caps++;
+        if (maxCap == null || p.marchSec > maxCap) maxCap = p.marchSec;
+      } else {
+        armies++;
+        if (maxArmy == null || p.marchSec > maxArmy) maxArmy = p.marchSec;
+      }
       cards += p.cards || 0;
       names[p.name] = true;
     }
+
     if (armies < o.minArmies || caps < o.minCaps) return null;
     for (i = 0; i < o.include.length; i++) {
       if (!names[o.include[i]]) return null;
     }
+    // Le dernier impact doit être un capitaine, sans ex aequo avec une armée.
+    if (maxCap == null || (maxArmy != null && maxCap <= maxArmy)) return null;
 
-    var res = NukeOptimizer.optimize(subset, o.fireWindow);
-    if (res.warnings.length) return null;
-
+    var rows = withFormations(orderByArrival(subset));
     var ids = subset.map(function (x) { return x.id; }).slice().sort();
+
     return {
       variant: variant.no,
-      rows: subset,
-      res: res,
-      attacks: subset.length,
+      rows: rows,
+      attacks: rows.length,
       armies: armies,
       caps: caps,
       cards: cards,
-      spread: res.impactSpread,
-      fire: res.fireWindow,
+      // Étalement réel des impacts : du premier coup au dernier.
+      spread: rows[rows.length - 1].marchSec - rows[0].marchSec,
       key: ids.join(","),
     };
   }
 
-  // Plus d'attaques d'abord (une nuke plus grosse frappe plus fort), puis la
-  // synchro la plus serrée, puis la fenêtre de tir la plus courte (plus facile
-  // à exécuter), puis plus d'armées, puis le moins de cartes de vitesse.
+  // Plus d'attaques d'abord (une nuke plus grosse frappe plus fort), puis les
+  // impacts les plus resserrés, puis plus d'armées, puis le moins de cartes
+  // de vitesse consommées.
   function compare(a, b) {
     return b.attacks - a.attacks ||
            a.spread - b.spread ||
-           a.fire - b.fire ||
            b.armies - a.armies ||
            a.cards - b.cards ||
            a.variant - b.variant;
@@ -229,7 +273,7 @@
         if (!hasName(pool, o.include[i])) return;
       }
 
-      pool = pool.slice().sort(function (a, b) { return idealA(a) - idealA(b); });
+      pool = orderByArrival(pool);
 
       var floor = Math.max(2, o.minArmies + o.minCaps);
       var top = pool.length;

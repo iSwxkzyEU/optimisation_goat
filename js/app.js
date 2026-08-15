@@ -774,15 +774,9 @@
     };
   }
 
-  // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code
-  function optimizedAsciiTable(rows) {
-    var headers = ["ID", "Type", "Card", "March", "Fire @", "Form"];
-    var data = rows.map(function (r) {
-      return [
-        (r.id || "?") + "[" + (r.name || "?") + "]",
-        r.type || "", r.qty || "", r.current, r.offset, r.formation || "",
-      ];
-    });
+  // Tableau ASCII (style bot) prêt à coller dans Discord, en bloc de code.
+  // Générique : les colonnes dépendent de l'écran appelant.
+  function asciiTable(headers, data) {
     var widths = headers.map(function (h, i) {
       return data.reduce(function (w, d) {
         return Math.max(w, String(d[i]).length);
@@ -807,6 +801,17 @@
     data.forEach(function (d) { out.push(row(d)); });
     out.push(border());
     return "```\n" + out.join("\n") + "\n```";
+  }
+
+  // Écran "Synchronized impact times" : modèle à compte à rebours décalé.
+  function optimizedAsciiTable(rows) {
+    return asciiTable(["ID", "Type", "Card", "March", "Fire @", "Form"],
+      rows.map(function (r) {
+        return [
+          (r.id || "?") + "[" + (r.name || "?") + "]",
+          r.type || "", r.qty || "", r.current, r.offset, r.formation || "",
+        ];
+      }));
   }
 
   /* ---------- Résultat d'une nuke (Success / Fail) ---------------------- */
@@ -1478,8 +1483,8 @@
       '<span class="vp-stat"><b>' + p.attacks + "</b> attacks</span>" +
       '<span class="vp-stat"><b>' + p.armies + "</b> armies</span>" +
       '<span class="vp-stat"><b>' + p.caps + "</b> caps</span>" +
-      '<span class="vp-stat' + (p.spread <= 2 ? " good" : "") + '">spread <b>' + p.spread + "s</b></span>" +
-      '<span class="vp-stat">fire window <b>' + p.fire + "s</b></span>" +
+      '<span class="vp-stat' + (p.spread <= 4 ? " good" : "") + '">impacts spread over <b>' +
+        p.spread + "s</b></span>" +
       '<span class="vp-stat">speed cards <b>' + p.cards + "</b></span>" +
       '<span class="vp-stat faint">variant ' + p.variant + "</span>" +
       (function () {
@@ -1492,19 +1497,39 @@
       "</div>";
   }
 
+  // "Lands" = écart d'impact avec le premier coup. Tout le monde tirant en
+  // même temps, c'est la marche qui fait l'ordre : cette colonne rend cet
+  // ordre lisible au lieu de le laisser deviner.
+  function landsLabel(sec) {
+    return sec === 0 ? "first" : "+" + sec + "s";
+  }
+
   function planTableHtml(p) {
-    var rows = p.res.rows.map(function (r) {
+    var last = p.rows.length - 1;
+    var rows = p.rows.map(function (r, i) {
       return "<tr><td>" + esc(r.id) + "</td><td class='strong'>" + esc(r.name) + "</td>" +
         "<td><span class='tag tag-" + esc(r.type) + "'>" + esc(r.type) + "</span></td>" +
-        "<td>" + esc(r.qty) + "</td><td>" + esc(r.current) + "</td>" +
-        "<td class='strong impact'>" + esc(r.offset) + "</td>" +
-        "<td>" + esc(r.newTime) + "</td>" +
+        "<td>" + esc(r.qty) + "</td><td>" + esc(r.march) + "</td>" +
+        "<td class='strong impact'>" + esc(landsLabel(r.landsSec)) +
+          (i === last ? " " + ic("flag") : "") + "</td>" +
         "<td><span class='form-type-badge'>" + esc(r.formation) + "</span></td></tr>";
     }).join("");
     return '<div class="opt-table-wrap"><table class="ptable small"><thead><tr>' +
       "<th>ID</th><th>Player</th><th>Type</th><th>Card</th>" +
-      "<th>March</th><th>Fire @</th><th>Lands</th><th>Form.</th>" +
+      "<th>Time</th><th>Lands</th><th>Form.</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+  }
+
+  // Le plan tel qu'on le colle dans Discord. Pas de "Fire @" : tout le monde
+  // tire en même temps, seule la colonne Time compte.
+  function planAsciiTable(p) {
+    return asciiTable(["ID", "Type", "Card", "Time", "Lands", "Form"],
+      p.rows.map(function (r) {
+        return [
+          (r.id || "?") + "[" + (r.name || "?") + "]",
+          r.type || "", r.qty || "", r.march, landsLabel(r.landsSec), r.formation || "",
+        ];
+      }));
   }
 
   function pickerResultsHtml() {
@@ -1530,8 +1555,8 @@
           '<div class="vp-row-head">' +
             '<span class="vp-rank">#' + (i + 2) + "</span>" +
             '<span class="vp-row-who">' + who + "</span>" +
-            '<span class="vp-row-meta">' + p.attacks + " att · " + p.spread + "s · " +
-              p.fire + "s · V" + p.variant + "</span>" +
+            '<span class="vp-row-meta">' + p.attacks + " att · " + p.armies + "a/" +
+              p.caps + "c · " + p.spread + "s spread · V" + p.variant + "</span>" +
             ic(opened ? "chevron-up" : "chevron-down") +
           "</div>" +
           (opened ? '<div class="vp-row-body">' + planStatsHtml(p) + planTableHtml(p) +
@@ -1582,7 +1607,7 @@
 
     var copy = document.getElementById("vp-copy");
     if (copy && out.plans.length) copy.onclick = function () {
-      var txt = optimizedAsciiTable(out.plans[0].res.rows);
+      var txt = planAsciiTable(out.plans[0]);
       navigator.clipboard.writeText(txt).then(function () {
         copy.innerHTML = ic("check") + " Copied!";
         refreshIcons();
@@ -1607,10 +1632,12 @@
         spread: plan.spread + " seconds",
         firstLaunch: "",
         raw: "",
-        participants: plan.res.rows.map(function (r) {
+        // Pas d'offset : tout le monde tire en même temps. Les lignes sont
+        // enregistrées dans l'ORDRE D'ARRIVÉE, capitaine en dernier.
+        participants: plan.rows.map(function (r) {
           return {
             id: r.id, name: r.name, type: r.type, qty: r.qty,
-            march: r.current, offset: r.offset, impact: r.newTime,
+            march: r.march, offset: "", impact: landsLabel(r.landsSec),
             side: "", formation: r.formation,
           };
         }),
@@ -1633,8 +1660,9 @@
     el.view.innerHTML =
       '<div class="page-head"><h2>' + ic("crosshair") + " Best nuke</h2></div>" +
       '<p class="muted intro">Paste the bot\'s variants file: the site tests every ' +
-        "combination of players inside each variant and keeps only the plans it can " +
-        "actually synchronize — <b>no player twice</b>, and <b>a captain landing last</b>. " +
+        "combination of players inside each variant and keeps only the valid plans — " +
+        "<b>no player twice</b>, and <b>a captain landing last</b>. Everyone fires at " +
+        "the same moment, so the <b>Time</b> column alone decides the order of impacts. " +
         "Click a player to force them in, click again to rule them out.</p>" +
       pickerImportHtml() +
       (picker.parsed

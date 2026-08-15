@@ -103,9 +103,11 @@ function show(title, out) {
     var p = out.plans[i];
     var who = p.rows.map(function (r) { return r.name + (r.type === "cap" ? "*" : ""); });
     line("   #" + (i + 1) + " V" + pad(p.variant, 3) + " " + p.attacks + " att. (" +
-         p.armies + "a/" + p.caps + "c) spread " + p.spread + "s fire " + p.fire +
-         "s cartes " + p.cards);
+         p.armies + "a/" + p.caps + "c) spread " + p.spread + "s cartes " + p.cards);
     line("       " + who.join(", "));
+    line("       ordre : " + p.rows.map(function (r) {
+      return r.march + (r.type === "cap" ? " CAP" : "");
+    }).join("  ->  "));
   }
   if (!out.total) line("   (aucun)");
   line("");
@@ -191,10 +193,27 @@ if (combo.plans.length) {
 }
 line("");
 
-/* --- 8. Controle "capi en dernier" --------------------------------- */
-var noCapLast = 0;
+/* --- 8. Controles d'ordre (tir simultane) -------------------------- */
+// L'invariant central : tout le monde tirant ensemble, c'est le temps de
+// marche qui fait l'ordre. Le dernier a frapper doit etre un capitaine, et
+// aucune armee ne doit frapper aussi tard ou plus tard que lui.
+var noCapLast = 0, unsorted = 0, armyTooLate = 0;
 for (var i2 = 0; i2 < big.plans.length; i2++) {
-  var rr = big.plans[i2].res.rows;
+  var rr = big.plans[i2].rows;
   if (!rr.length || rr[rr.length - 1].type !== "cap") noCapLast++;
+
+  var maxArmy = null, maxCap = null;
+  for (var k2 = 0; k2 < rr.length; k2++) {
+    if (k2 && rr[k2].marchSec < rr[k2 - 1].marchSec) unsorted++;
+    if (rr[k2].type === "cap") {
+      if (maxCap == null || rr[k2].marchSec > maxCap) maxCap = rr[k2].marchSec;
+    } else if (maxArmy == null || rr[k2].marchSec > maxArmy) {
+      maxArmy = rr[k2].marchSec;
+    }
+  }
+  if (maxArmy != null && maxCap != null && maxCap <= maxArmy) armyTooLate++;
 }
+line("=== 8. CONTROLES D'ORDRE (tir simultane) ===");
 line("  plans dont le dernier impact n'est PAS un cap : " + noCapLast);
+line("  plans mal tries par temps de marche           : " + unsorted);
+line("  plans ou une armee frappe apres/avec le dernier cap : " + armyTooLate);
