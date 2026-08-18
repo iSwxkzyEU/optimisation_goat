@@ -240,13 +240,16 @@
     };
   }
 
-  // Plus d'attaques d'abord (une nuke plus grosse frappe plus fort), puis les
-  // impacts les plus resserrés, puis plus d'armées, puis le moins de cartes
-  // de vitesse consommées.
+  // Plus la nuke est GROSSE, mieux c'est (plus d'armées + de capis frappent) :
+  // le nombre total d'attaques prime. À taille égale, on PRIORISE LES CAPIS
+  // (un capitaine de plus vaut mieux qu'un plan plus resserré). Ensuite seulement
+  // les impacts les plus serrés, puis le moins de cartes de vitesse consommées.
+  // (À attaques ET capis égaux, le nombre d'armées est identique — inutile de
+  // le départager.)
   function compare(a, b) {
     return b.attacks - a.attacks ||
+           b.caps - a.caps ||
            a.spread - b.spread ||
-           b.armies - a.armies ||
            a.cards - b.cards ||
            a.variant - b.variant;
   }
