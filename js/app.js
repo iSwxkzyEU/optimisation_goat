@@ -1330,7 +1330,7 @@
       include: picker.include,
       exclude: picker.exclude,
       only: picker.only && picker.include.length ? picker.include : null,
-      limit: 10,
+      limit: 25,
     };
   }
 
@@ -1575,8 +1575,10 @@
           planStatsHtml(best) +
           planTableHtml(best) +
           '<div class="vp-winner-foot">' +
-            '<button class="btn primary" data-create="' + esc(best.key) + '">' +
-              ic("plus") + " Create nuke from this plan</button>" +
+            '<button class="btn primary" id="vp-create-all">' +
+              ic("layers") + " Create nuke with all " + out.plans.length + " plans</button>" +
+            '<button class="btn ghost" data-create="' + esc(best.key) + '">' +
+              ic("plus") + " Only this plan</button>" +
             '<button class="btn ghost" id="vp-copy">' + ic("copy") + " Copy for Discord</button>" +
           "</div>" +
         "</div>" +
@@ -1607,6 +1609,11 @@
       };
     });
 
+    var createAll = document.getElementById("vp-create-all");
+    if (createAll && out.plans.length) createAll.onclick = function () {
+      createNukeFromAllPlans(out.plans, createAll);
+    };
+
     var copy = document.getElementById("vp-copy");
     if (copy && out.plans.length) copy.onclick = function () {
       var txt = planAsciiTable(out.plans[0]);
@@ -1619,8 +1626,29 @@
     };
   }
 
-  // Transforme le plan retenu en vraie nuke enregistrée, puis ouvre sa fiche.
-  function createNukeFromPlan(plan, btn) {
+  // Un plan (sortie du picker) -> une variante enregistrable. `rank` sert au
+  // libellé : 0 = "Best", sinon "#N". Tout le monde tire en même temps, donc pas
+  // d'offset ; les lignes sont dans l'ORDRE D'ARRIVÉE, capitaine en dernier.
+  function planToVariant(plan, rank) {
+    return {
+      label: (rank === 0 ? "Best" : "#" + (rank + 1)) + " · variant " + plan.variant,
+      side: "",
+      spread: plan.spread + " seconds",
+      firstLaunch: "",
+      raw: "",
+      participants: plan.rows.map(function (r) {
+        return {
+          id: r.id, name: r.name, type: r.type, qty: r.qty,
+          march: r.march, offset: "", impact: landsLabel(r.landsSec),
+          side: "", formation: r.formation,
+        };
+      }),
+    };
+  }
+
+  // Enregistre une nuke depuis une liste de variantes déjà construites, puis
+  // ouvre sa fiche. `label` = texte de repli du bouton en cas d'erreur.
+  function saveNukeVariants(variants, btn, label) {
     var p = picker.parsed;
     var nuke = {
       target: p.target || "",
@@ -1628,22 +1656,7 @@
       categoryId: null,
       priority: false,
       targetImage: null,
-      variants: [{
-        label: "Auto · variant " + plan.variant,
-        side: "",
-        spread: plan.spread + " seconds",
-        firstLaunch: "",
-        raw: "",
-        // Pas d'offset : tout le monde tire en même temps. Les lignes sont
-        // enregistrées dans l'ORDRE D'ARRIVÉE, capitaine en dernier.
-        participants: plan.rows.map(function (r) {
-          return {
-            id: r.id, name: r.name, type: r.type, qty: r.qty,
-            march: r.march, offset: "", impact: landsLabel(r.landsSec),
-            side: "", formation: r.formation,
-          };
-        }),
-      }],
+      variants: variants,
     };
     btn.disabled = true;
     btn.textContent = "Creating…";
@@ -1651,9 +1664,22 @@
       route("nuke", saved.id);
     }).catch(function (e) {
       btn.disabled = false;
-      btn.textContent = "Create nuke from this plan";
+      btn.textContent = label;
       showErr(e);
     });
+  }
+
+  // Transforme le plan retenu en vraie nuke (1 seule variante), puis ouvre sa fiche.
+  function createNukeFromPlan(plan, btn) {
+    saveNukeVariants([planToVariant(plan, 0)], btn, "Only this plan");
+  }
+
+  // Garde EN STOCK toutes les possibilités trouvées : une seule nuke dont les
+  // variantes sont tous les plans classés (le meilleur en variante 1). C'est ce
+  // stock que le bot Discord fait défiler (◀ / Suivant) sur /id_* et /launch_*.
+  function createNukeFromAllPlans(plans, btn) {
+    saveNukeVariants(plans.map(planToVariant), btn,
+      "Create nuke with all " + plans.length + " plans");
   }
 
   function renderBest() {

@@ -250,6 +250,7 @@ function button(customId, label, opts) {
   opts = opts || {};
   var b = { type: 2, style: opts.style || 2, custom_id: customId, label: label };
   if (opts.emoji) b.emoji = { name: opts.emoji };
+  if (opts.disabled) b.disabled = true;
   return b;
 }
 
@@ -356,6 +357,29 @@ function variantMenuData(nuke, variants, mode) {
   };
 }
 
+// Navigation entre variantes par FLÈCHES : on n'affiche QUE le tableau de la
+// variante `index`, avec ◀ Previous / (i/N) / Next ▶. Cliquer une flèche
+// ré-affiche (UPDATE) le tableau de la variante voisine — le compteur du milieu
+// est un bouton inerte (désactivé). Les flèches de bord sont désactivées.
+// custom_id des flèches : "vnav:<mode>:<nukeId>:<indexCible>".
+function variantNavData(nuke, variants, mode, index) {
+  var total = variants.length;
+  if (index < 0) index = 0;
+  if (index > total - 1) index = total - 1;
+  var v = variants[index];
+  var content = variantTableMessage(nuke, v, mode, { tag: planName(v, index) });
+  var nav = row(
+    button("vnav:" + mode + ":" + nuke.id + ":" + (index - 1), "◀ Previous",
+      { disabled: index <= 0 }),
+    button("vnav_count", (index + 1) + " / " + total, { disabled: true }),
+    button("vnav:" + mode + ":" + nuke.id + ":" + (index + 1), "Next ▶",
+      { disabled: index >= total - 1 })
+  );
+  // Aucun ping : ceci n'affiche que la cible + le tableau. parse:[] neutralise
+  // toute mention qui se glisserait dans le contenu (nom de joueur, etc.).
+  return { content: content, components: [nav], allowed_mentions: { parse: [] } };
+}
+
 // /launch_* avec plusieurs plans : choisir LE plan à lancer (pas de "tous").
 // Pas de flag ici : éphémère posé par l'appelant (réponse initiale) ou hérité
 // du message éphémère quand on l'affiche via UPDATE (le ping final reste public).
@@ -392,7 +416,8 @@ function handleComponent(res, body) {
       .catch(function () { dbError(res); });
   }
 
-  // Village → tableau (1 plan) ou menu de plans (>1).
+  // Village → tableau (1 plan) ou navigation par flèches (>1) : on n'affiche
+  // que le tableau de la variante courante, ◀ / Suivant ▶ font défiler.
   if (kind === "idn") {
     return fetchNukeById(value).then(function (nuke) {
       if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
@@ -401,7 +426,18 @@ function handleComponent(res, body) {
         respond(res, REPLY.MESSAGE, { content: variantTableMessage(nuke, variants[0], mode) });
         return;
       }
-      respond(res, REPLY.UPDATE, variantMenuData(nuke, variants, mode));
+      respond(res, REPLY.UPDATE, variantNavData(nuke, variants, mode, 0));
+    }).catch(function () { dbError(res); });
+  }
+
+  // Flèches de navigation entre variantes (◀ / Suivant ▶) → ré-affiche le
+  // tableau de la variante ciblée dans le MÊME message (UPDATE).
+  if (kind === "vnav") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+      respond(res, REPLY.UPDATE, variantNavData(nuke, variants, mode, idx));
     }).catch(function () { dbError(res); });
   }
 
