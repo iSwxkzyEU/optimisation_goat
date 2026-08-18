@@ -426,7 +426,9 @@ function handleComponent(res, body) {
         respond(res, REPLY.MESSAGE, { content: variantTableMessage(nuke, variants[0], mode) });
         return;
       }
-      respond(res, REPLY.UPDATE, variantNavData(nuke, variants, mode, 0));
+      // MESSAGE (pas UPDATE) : on poste un NOUVEAU message PUBLIC visible de
+      // toute la guilde. Les flèches éditeront ensuite ce message public.
+      respond(res, REPLY.MESSAGE, variantNavData(nuke, variants, mode, 0));
     }).catch(function () { dbError(res); });
   }
 
