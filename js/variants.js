@@ -254,6 +254,71 @@
            a.variant - b.variant;
   }
 
+  /* ---------- Sélection DIVERSIFIÉE (pour enchaîner les nukes) --------
+     Les meilleurs plans par qualité se ressemblent presque tous (un joueur
+     d'écart). Or l'intérêt de garder 25 variantes, c'est d'avoir des rosters
+     DIFFÉRENTS : après une 1ʳᵉ nuke, les mêmes joueurs sont cramés, il faut
+     une 2ᵉ compo qui pioche ailleurs. On garde donc le MEILLEUR plan en n°1,
+     puis on ajoute à chaque fois celui dont les joueurs diffèrent le PLUS de
+     ceux déjà retenus (distance de Jaccard sur les IDs). La qualité ne sert
+     plus qu'à départager deux candidats aussi différents l'un que l'autre. */
+
+  // IDs de joueurs UNIQUES d'un plan (un même joueur en double ne compte qu'une fois).
+  function uniqIds(plan) {
+    var seen = {}, out = [];
+    for (var i = 0; i < plan.rows.length; i++) {
+      var id = plan.rows[i].id;
+      if (!seen[id]) { seen[id] = true; out.push(id); }
+    }
+    return out;
+  }
+
+  // Distance de Jaccard entre deux jeux d'IDs : 0 = mêmes joueurs, 1 = aucun
+  // joueur commun (le rêve pour enchaîner deux nukes sans réutiliser personne).
+  function jaccardDist(aIds, bIds) {
+    var setB = {}, i, inter = 0;
+    for (i = 0; i < bIds.length; i++) setB[bIds[i]] = true;
+    for (i = 0; i < aIds.length; i++) if (setB[aIds[i]]) inter++;
+    var uni = aIds.length + bIds.length - inter;
+    return uni ? 1 - inter / uni : 0;
+  }
+
+  // Poids de la qualité dans le choix des 24 suivants : petit, pour que la
+  // DIFFÉRENCE de roster domine et que la qualité ne fasse que départager.
+  var DIVERSITY_QUALITY_WEIGHT = 0.15;
+
+  // À partir des plans triés par qualité (le meilleur en tête), renvoie `limit`
+  // plans : le meilleur, puis les plus dissemblables les uns des autres.
+  function selectDiverse(sorted, limit) {
+    if (sorted.length <= limit) return sorted;
+
+    // On diversifie dans un VIVIER de bons plans (pas parmi tout, sinon on
+    // remonterait des plans faibles juste parce qu'ils sont exotiques).
+    var pool = sorted.slice(0, Math.min(sorted.length, Math.max(limit * 8, 200)));
+    var ids = pool.map(uniqIds);
+
+    var chosen = [0];              // n°1 = la BEST NUKE EVER
+    var taken = { 0: true };
+    while (chosen.length < limit) {
+      var bestI = -1, bestScore = -Infinity;
+      for (var i = 0; i < pool.length; i++) {
+        if (taken[i]) continue;
+        var minD = Infinity;      // distance au plan déjà retenu le PLUS proche
+        for (var c = 0; c < chosen.length; c++) {
+          var d = jaccardDist(ids[i], ids[chosen[c]]);
+          if (d < minD) minD = d;
+        }
+        var qual = 1 - i / pool.length;                 // 1 = meilleur du vivier
+        var score = minD + DIVERSITY_QUALITY_WEIGHT * qual;
+        if (score > bestScore) { bestScore = score; bestI = i; }
+      }
+      if (bestI < 0) break;
+      chosen.push(bestI);
+      taken[bestI] = true;
+    }
+    return chosen.map(function (i) { return pool[i]; });
+  }
+
   function search(parsed, options) {
     var o = defaults(options);
     var plans = [];
@@ -306,7 +371,7 @@
 
     plans.sort(compare);
     return {
-      plans: plans.slice(0, o.limit),
+      plans: selectDiverse(plans, o.limit),
       total: plans.length,
       scanned: scanned,
     };
