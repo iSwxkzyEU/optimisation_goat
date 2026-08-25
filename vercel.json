@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/discord.js": {
+      "maxDuration": 60
+    }
+  }
+}

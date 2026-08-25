@@ -106,6 +106,27 @@ create table if not exists public.plan_availability (
   primary key (plan_id, user_id)
 );
 
+-- ---------- Bouton "⚙️ Setup" du bot : brouillons de tir ----------
+-- Un brouillon = une COPIE de travail d'un plan, éditée depuis Discord (side,
+-- formations, joueurs retirés/ajoutés) avant de cliquer 📢 Post ou 🚀 Launch.
+-- Le plan enregistré dans "nukes" n'est jamais modifié par le bot.
+--   mode         = 'syncro' (optimisé) ou 'raw' (same time)
+--   label        = nom du plan d'origine ("Plan 2"), vide s'il n'y en a qu'un
+--   participants = [{ "id","name","type","qty","march","side","formation",
+--                     "formLock" }] ; formLock = formation imposée à la main.
+create table if not exists public.nuke_drafts (
+  id            uuid primary key default gen_random_uuid(),
+  nuke_id       uuid,
+  target        text,
+  target_player text,
+  mode          text,
+  side          text,
+  label         text,
+  participants  jsonb default '[]'::jsonb,
+  created_by    text,
+  created_at    timestamptz default now()
+);
+
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),
 -- donc on autorise la clé publique "anon" à tout lire/écrire.
@@ -115,6 +136,7 @@ alter table public.categories        enable row level security;
 alter table public.nuke_history      enable row level security;
 alter table public.plans             enable row level security;
 alter table public.plan_availability enable row level security;
+alter table public.nuke_drafts       enable row level security;
 
 drop policy if exists "anon all nukes"             on public.nukes;
 drop policy if exists "anon all formations"        on public.formations;
@@ -122,6 +144,7 @@ drop policy if exists "anon all categories"        on public.categories;
 drop policy if exists "anon all nuke_history"      on public.nuke_history;
 drop policy if exists "anon all plans"             on public.plans;
 drop policy if exists "anon all plan_availability" on public.plan_availability;
+drop policy if exists "anon all nuke_drafts"       on public.nuke_drafts;
 
 create policy "anon all nukes"             on public.nukes             for all using (true) with check (true);
 create policy "anon all formations"        on public.formations        for all using (true) with check (true);
@@ -129,6 +152,7 @@ create policy "anon all categories"        on public.categories        for all u
 create policy "anon all nuke_history"      on public.nuke_history      for all using (true) with check (true);
 create policy "anon all plans"             on public.plans             for all using (true) with check (true);
 create policy "anon all plan_availability" on public.plan_availability for all using (true) with check (true);
+create policy "anon all nuke_drafts"       on public.nuke_drafts       for all using (true) with check (true);
 
 -- ---------- Stockage des fichiers (buckets publics) ----------
 insert into storage.buckets (id, name, public) values ('targets', 'targets', true)

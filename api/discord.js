@@ -13,14 +13,25 @@
                                       (Nécessite que le bot ait « Gérer les salons »
                                       + « Gérer les rôles » ; sinon repli sur le
                                       salon courant.)
-     /id_syncro                     : menu catégorie -> village -> plan,
-                                      puis tableau OPTIMISÉ (synchro).
+     /id_syncro                     : menu catégorie -> village -> APERÇU privé
+                                      du tableau OPTIMISÉ (synchro), avec trois
+                                      boutons : 📢 Post table (publie le tableau
+                                      pour tout le monde), ⚙️ Setup (change le
+                                      side / les formations, retire ou ajoute un
+                                      joueur) et 🚀 Launch (publie + ping + un
+                                      message de formation par joueur).
      /id_same_time                  : idem mais tableau BRUT (same time).
      /launch_syncro [village]       : récap + PING des joueurs + tableau
-                                      optimisé. Sans argument -> même menu de
+                                      optimisé + un message de formation par
+                                      joueur. Sans argument -> même menu de
                                       recherche que /id_* (catégorie -> village
                                       -> plan), puis tir. Choix du plan si >1.
      /launch_same_time [village]    : idem mais tableau brut (same time).
+
+   PUBLICATION : Discord force l'éphémère sur toute réponse à un message
+   éphémère (nos menus). Les boutons 📢 / 🚀 postent donc via le BOT
+   (POST /channels/{id}/messages) : c'est ça qui rend le tableau visible de
+   toute la guilde. Il faut DISCORD_BOT_TOKEN + « Envoyer des messages ».
      /optimise <village> [seconds]  : plan principal, optimisé ±seconds ;
                                       sans seconds -> temps BRUTS.
 
@@ -58,8 +69,19 @@ var DISCORD_PUBLIC_KEY =
 var INTERACTION = { PING: 1, COMMAND: 2, COMPONENT: 3, MODAL_SUBMIT: 5 };
 // DEFERRED (5) = "le bot réfléchit…" : on ACK tout de suite (limite 3 s) puis on
 // remplit le message via editOriginal() une fois le travail (salon + plan) fait.
-var REPLY = { PONG: 1, MESSAGE: 4, DEFERRED: 5, UPDATE: 7, MODAL: 9 };
+// DEFERRED_UPDATE (6) = même chose mais pour un CLIC sur un composant : on garde
+// le message tel quel le temps du travail, puis on l'édite (editOriginal).
+var REPLY = { PONG: 1, MESSAGE: 4, DEFERRED: 5, DEFERRED_UPDATE: 6, UPDATE: 7, MODAL: 9 };
 var EPHEMERAL = 64; // message visible seulement par l'utilisateur (flag)
+
+// Sides et types de formation du site (cf. js/store.js).
+var SIDES = ["RIGHT", "LEFT", "FRONT", "BACK"];
+var FORM_TYPES = ["50", "90", "110", "Barrack"];
+
+// Cadence d'envoi des messages "1 joueur = 1 message" : Discord limite un salon
+// à ~5 messages / 5 s, donc on espace d'un peu plus d'une seconde.
+var POST_GAP_MS = 1100;
+var MAX_PLAYER_PINGS = 30; // garde-fou (durée de la lambda)
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
 function readRawBody(req) {
@@ -141,6 +163,55 @@ function fetchNukesByCategory(categoryId) {
     "nukes?select=id,target,target_player&order=target.asc&category_id=eq." +
       encodeURIComponent(categoryId)
   );
+}
+
+// Fichiers de formation uploadés sur le site : une ligne par fichier
+// (side = RIGHT/LEFT/FRONT/BACK, type = 50/90/110/Barrack, url = lien public).
+// Jamais bloquant : en cas d'erreur on renvoie une liste vide.
+function fetchFormationFiles() {
+  return sbGet("formations?select=side,type,name,url")
+    .catch(function () { return []; });
+}
+
+// Devine le type de formation (50 / 90 / 110 / Barrack) depuis le texte d'une
+// ligne de joueur ("90 form", "F110NOCAPS", "Barrack"…). null sinon.
+// Miroir de formTypeOf() du site (js/app.js) : même règle des deux côtés.
+function formTypeOf(formation) {
+  var s = String(formation || "").toLowerCase();
+  if (/barrack/.test(s)) return "Barrack";
+  var m = s.match(/(110|90|50)/);
+  return m ? m[1] : null;
+}
+
+// Fichier correspondant à (side, formation). null si rien d'uploadé pour ce couple.
+function pickFormationFile(files, side, formation) {
+  var type = formTypeOf(formation);
+  if (!type) return null;
+  var s = String(side || "").toUpperCase();
+  var hit = (files || []).find(function (f) {
+    return f && f.url && String(f.side || "").toUpperCase() === s &&
+      String(f.type || "") === type;
+  });
+  return hit || null;
+}
+
+// --- Brouillons de tir (bouton "Setup" du bot) --------------------------
+// Un brouillon = une COPIE de travail d'un plan : side / formations / joueurs
+// modifiables depuis Discord SANS toucher au plan enregistré sur le site.
+// Il vit le temps de la préparation ; le bouton Launch le publie.
+function createDraft(draft) {
+  return sbWrite("POST", "nuke_drafts", draft, { Prefer: "return=representation" })
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+function fetchDraft(id) {
+  return sbGet("nuke_drafts?select=*&limit=1&id=eq." + encodeURIComponent(id))
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+// PATCH + return=representation : une seule requête pour écrire ET relire.
+function patchDraft(id, patch) {
+  return sbWrite("PATCH", "nuke_drafts?id=eq." + encodeURIComponent(id), patch,
+    { Prefer: "return=representation" })
+    .then(function (rows) { return (rows && rows[0]) || null; });
 }
 
 function reply(res, content, ephemeral) {
@@ -357,27 +428,194 @@ function variantMenuData(nuke, variants, mode) {
   };
 }
 
-// Navigation entre variantes par FLÈCHES : on n'affiche QUE le tableau de la
-// variante `index`, avec ◀ Previous / (i/N) / Next ▶. Cliquer une flèche
-// ré-affiche (UPDATE) le tableau de la variante voisine — le compteur du milieu
-// est un bouton inerte (désactivé). Les flèches de bord sont désactivées.
-// custom_id des flèches : "vnav:<mode>:<nukeId>:<indexCible>".
-function variantNavData(nuke, variants, mode, index) {
+// Ajoute un bandeau au-dessus du tableau — SEULEMENT s'il tient dans les
+// 2000 caractères de Discord (sinon on garde le tableau seul, prioritaire).
+function withNote(content, note) {
+  var full = note + "\n" + content;
+  return full.length <= 2000 ? full : content;
+}
+
+// APERÇU (éphémère) d'un plan : le tableau tel qu'il sera publié + les actions.
+// Rien n'est visible des autres tant qu'on n'a pas cliqué 📢 Post ou 🚀 Launch —
+// c'est le « bouton de confirmation » demandé : on regarde, puis on publie.
+//   ◀ / (i/N) / ▶  : navigation entre les plans (si le village en a plusieurs)
+//   📢 Post table  : publie le tableau dans le salon, visible de tous
+//   ⚙️ Setup       : ouvre l'éditeur (side / formations / joueurs)
+//   🚀 Launch      : publie le tableau + ping + 1 message de formation par joueur
+// custom_id : "<action>:<mode>:<nukeId>:<index>".
+function previewData(nuke, variants, mode, index) {
   var total = variants.length;
   if (index < 0) index = 0;
   if (index > total - 1) index = total - 1;
   var v = variants[index];
-  var content = variantTableMessage(nuke, v, mode, { tag: planName(v, index) });
-  var nav = row(
-    button("vnav:" + mode + ":" + nuke.id + ":" + (index - 1), "◀ Previous",
-      { disabled: index <= 0 }),
-    button("vnav_count", (index + 1) + " / " + total, { disabled: true }),
-    button("vnav:" + mode + ":" + nuke.id + ":" + (index + 1), "Next ▶",
-      { disabled: index >= total - 1 })
-  );
+  var content = variantTableMessage(nuke, v, mode, { tag: variantTag(v, index, total) });
+  var suffix = mode + ":" + nuke.id + ":" + index;
+  var comps = [];
+  if (total > 1) {
+    comps.push(row(
+      button("vnav:" + mode + ":" + nuke.id + ":" + (index - 1), "◀ Previous",
+        { disabled: index <= 0 }),
+      button("vnav_count", (index + 1) + " / " + total, { disabled: true }),
+      button("vnav:" + mode + ":" + nuke.id + ":" + (index + 1), "Next ▶",
+        { disabled: index >= total - 1 })
+    ));
+  }
+  comps.push(row(
+    button("post:" + suffix, "Post table", { style: 1, emoji: "📢" }),
+    button("setup:" + suffix, "Setup", { style: 2, emoji: "⚙️" }),
+    button("lnow:" + suffix, "Launch", { style: 3, emoji: "🚀" })
+  ));
   // Aucun ping : ceci n'affiche que la cible + le tableau. parse:[] neutralise
   // toute mention qui se glisserait dans le contenu (nom de joueur, etc.).
-  return { content: content, components: [nav], allowed_mentions: { parse: [] } };
+  return {
+    content: withNote(content, "*Preview — you alone see this. **📢 Post** shows the " +
+      "table to everyone, **⚙️ Setup** edits it, **🚀 Launch** posts it and pings each player.*"),
+    components: comps,
+    allowed_mentions: { parse: [] },
+  };
+}
+
+// --- Éditeur de tir ("Setup") -------------------------------------------
+// Le brouillon (nuke_drafts) est une copie de travail : on y change le side,
+// les formations, on retire/ajoute des joueurs, et on publie quand c'est prêt.
+// Le plan enregistré sur le site n'est JAMAIS modifié.
+
+// Objets "façon nuke"/"façon variante" attendus par variantTableMessage().
+function draftRow(draft) {
+  return { target: draft.target || "", target_player: draft.target_player || "" };
+}
+function draftVariant(draft) {
+  return {
+    label: draft.label || "",
+    side: draft.side || "",
+    participants: draft.participants || [],
+  };
+}
+
+// Copie d'un joueur dans le brouillon (on ne garde que ce qui sert au calcul
+// et à l'affichage). formLock = formation imposée à la main dans l'éditeur.
+function cloneParticipant(p) {
+  p = p || {};
+  return {
+    id: p.id || "",
+    name: p.name || "",
+    type: p.type || "",
+    qty: p.qty || "",
+    march: p.march || "",
+    side: p.side || "",
+    formation: p.formation || "",
+    formLock: !!p.formLock,
+  };
+}
+
+// Marque une option de menu comme pré-sélectionnée. On passe par la notation
+// crochets : "default" est un mot réservé en ES3, et scripts/syntax-check.js
+// (JScript) refuse de parser le fichier s'il le voit en clé littérale.
+function selected(option, isDefault) {
+  if (isDefault) option["default"] = true;
+  return option;
+}
+
+// Sous-titre d'une option de joueur : type · card · marche · formation.
+function playerDesc(p) {
+  var bits = [];
+  if (p.type) bits.push(p.type);
+  if (p.qty) bits.push(p.qty);
+  if (p.march) bits.push(p.march);
+  if (p.formation) bits.push("form " + p.formation);
+  return (bits.join(" · ") || "—").slice(0, 100);
+}
+
+// Options "joueur" (valeur = index dans le brouillon, re-généré à chaque rendu).
+function playerOptions(draft) {
+  return (draft.participants || []).slice(0, 25).map(function (p, i) {
+    return {
+      label: String(p.name || p.id || "Player " + (i + 1)).slice(0, 100),
+      value: String(i),
+      description: playerDesc(p),
+    };
+  });
+}
+
+// Panneau principal de l'éditeur : aperçu du tableau + 4 rangées d'actions.
+function draftPanelData(draft) {
+  var content = variantTableMessage(draftRow(draft), draftVariant(draft), draft.mode,
+    { tag: draft.label || "" });
+  var players = playerOptions(draft);
+  var comps = [
+    row(selectMenu("drs:" + draft.id, "Side — " + (draft.side || "not set"),
+      SIDES.map(function (s) {
+        return selected({ label: s, value: s }, s === draft.side);
+      }))),
+  ];
+  if (players.length) {
+    comps.push(row(selectMenu("drp:" + draft.id, "Set a player's formation", players)));
+    comps.push(row(selectMenu("drx:" + draft.id, "Remove player(s)", players,
+      { min: 0, max: players.length })));
+  }
+  comps.push(row(
+    button("dra:" + draft.id, "Add player", { emoji: "➕" }),
+    button("drpost:" + draft.id, "Post table", { style: 1, emoji: "📢" }),
+    button("drl:" + draft.id, "Launch", { style: 3, emoji: "🚀" })
+  ));
+  var note = "*Setup — you alone see this. Changes apply to this launch only " +
+    "(the plan on the site is untouched).*";
+  if ((draft.participants || []).length > 25) {
+    note += "\n*(only the first 25 players can be edited here)*";
+  }
+  return {
+    content: withNote(content, note),
+    components: comps,
+    allowed_mentions: { parse: [] },
+  };
+}
+
+// Deuxième écran de l'éditeur : la formation d'UN joueur. "Auto" rend la main
+// à l'optimiseur (90 pour la 1ʳᵉ armée, 110 pour les autres, 50 pour le cap).
+function draftFormPanelData(draft, index) {
+  var p = (draft.participants || [])[index] || {};
+  var options = [selected({
+    label: "Auto (computed)", value: "auto",
+    description: "Let the optimizer pick the formation",
+  }, !p.formLock)];
+  FORM_TYPES.forEach(function (t) {
+    options.push(selected({ label: t, value: t },
+      !!p.formLock && String(p.formation) === t));
+  });
+  return {
+    content: "⚙️ **Formation for " + (p.name || p.id || "this player") + "** — pick one:",
+    components: [
+      row(selectMenu("drf:" + draft.id + ":" + index, "Choose a formation", options)),
+      row(button("drb:" + draft.id, "Back to setup", { emoji: "◀" })),
+    ],
+    allowed_mentions: { parse: [] },
+  };
+}
+
+// Modal "➕ Add player" (5 champs max côté Discord ; la formation se règle
+// ensuite avec le menu "Set a player's formation").
+function addPlayerModalData(draftId) {
+  return {
+    custom_id: "dram:" + draftId,
+    title: "Add a player",
+    components: [
+      row(textInput("name", "Player name", { style: 1, required: true, max_length: 60 })),
+      row(textInput("march", "March time (e.g. 1h21m42s)", { style: 1, required: true, max_length: 20 })),
+      row(textInput("type", "Type — army or cap", { style: 1, required: false, max_length: 10, placeholder: "army" })),
+      row(textInput("qty", "Card (x2 … x6)", { style: 1, required: false, max_length: 10, placeholder: "x4" })),
+      row(textInput("pid", "Player ID (optional)", { style: 1, required: false, max_length: 20 })),
+    ],
+  };
+}
+
+function draftGone(res) {
+  reply(res, "❌ This setup is no longer available — run the command again.", true);
+}
+
+// La table nuke_drafts n'existe pas encore (SQL pas rejoué) ou Supabase répond mal.
+function draftDbError(res) {
+  reply(res, "⚠️ Setup needs the `nuke_drafts` table — re-run `supabase-setup.sql` " +
+    "in Supabase (SQL Editor), then try again.", true);
 }
 
 // /launch_* avec plusieurs plans : choisir LE plan à lancer (pas de "tous").
@@ -416,31 +654,150 @@ function handleComponent(res, body) {
       .catch(function () { dbError(res); });
   }
 
-  // Village → tableau (1 plan) ou navigation par flèches (>1) : on n'affiche
-  // que le tableau de la variante courante, ◀ / Suivant ▶ font défiler.
+  // Village → APERÇU du plan (éphémère) : tableau + boutons Post / Setup /
+  // Launch, et les flèches ◀ ▶ si le village a plusieurs plans. On UPDATE le
+  // menu éphémère : rien n'est encore visible des autres.
   if (kind === "idn") {
     return fetchNukeById(value).then(function (nuke) {
       if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-      var variants = variantsOf(nuke);
-      if (variants.length <= 1) {
-        respond(res, REPLY.MESSAGE, { content: variantTableMessage(nuke, variants[0], mode) });
-        return;
-      }
-      // MESSAGE (pas UPDATE) : on poste un NOUVEAU message PUBLIC visible de
-      // toute la guilde. Les flèches éditeront ensuite ce message public.
-      respond(res, REPLY.MESSAGE, variantNavData(nuke, variants, mode, 0));
+      respond(res, REPLY.UPDATE, previewData(nuke, variantsOf(nuke), mode, 0));
     }).catch(function () { dbError(res); });
   }
 
-  // Flèches de navigation entre variantes (◀ / Suivant ▶) → ré-affiche le
-  // tableau de la variante ciblée dans le MÊME message (UPDATE).
+  // Flèches de navigation entre variantes (◀ / Suivant ▶) → ré-affiche
+  // l'aperçu de la variante ciblée dans le MÊME message (UPDATE).
   if (kind === "vnav") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+      respond(res, REPLY.UPDATE, previewData(nuke, variantsOf(nuke), mode, idx));
+    }).catch(function () { dbError(res); });
+  }
+
+  // 📢 Post table → publie le tableau du plan dans le salon (visible de TOUS).
+  if (kind === "post") {
     return fetchNukeById(parts[2]).then(function (nuke) {
       if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
       var variants = variantsOf(nuke);
       var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
-      respond(res, REPLY.UPDATE, variantNavData(nuke, variants, mode, idx));
+      var v = variants[idx] || variants[0];
+      return publishAndAck(res, body, {
+        content: variantTableMessage(nuke, v, mode, { tag: variantTag(v, idx, variants.length) }),
+        allowed_mentions: { parse: [] },
+      });
     }).catch(function () { dbError(res); });
+  }
+
+  // ⚙️ Setup → crée un brouillon (copie du plan) et ouvre l'éditeur.
+  if (kind === "setup") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+      var v = variants[idx] || variants[0];
+      return createDraft({
+        nuke_id: nuke.id,
+        target: nuke.target || "",
+        target_player: nuke.target_player || "",
+        mode: mode,
+        side: v.side || "",
+        label: variantTag(v, idx, variants.length),
+        participants: (v.participants || []).map(cloneParticipant),
+        created_by: interactionUser(body).id,
+      }).then(function (draft) {
+        if (!draft) { draftDbError(res); return; }
+        respond(res, REPLY.UPDATE, draftPanelData(draft));
+      });
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // 🚀 Launch (depuis l'aperçu) → tableau public + ping + formations.
+  if (kind === "lnow") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+      var v = variants[idx] || variants[0];
+      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length));
+    }).catch(function () { dbError(res); });
+  }
+
+  // --- Éditeur de tir (brouillon) ---------------------------------------
+  // Side choisi : un seul aller-retour (PATCH + relecture) puis re-rendu.
+  if (kind === "drs") {
+    return patchDraft(parts[1], { side: value }).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      respond(res, REPLY.UPDATE, draftPanelData(draft));
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // Joueur choisi → écran "quelle formation pour lui ?".
+  if (kind === "drp") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      var i = parseInt(value, 10); if (isNaN(i)) i = 0;
+      respond(res, REPLY.UPDATE, draftFormPanelData(draft, i));
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // Formation choisie pour le joueur d'index parts[2] ("auto" = laisse calculer).
+  if (kind === "drf") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      var i = parseInt(parts[2], 10); if (isNaN(i)) i = 0;
+      var ps = draft.participants || [];
+      if (ps[i]) {
+        if (value === "auto") { ps[i].formation = ""; ps[i].formLock = false; }
+        else { ps[i].formation = value; ps[i].formLock = true; }
+      }
+      return patchDraft(draft.id, { participants: ps }).then(function (saved) {
+        respond(res, REPLY.UPDATE, draftPanelData(saved || draft));
+      });
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // Joueur(s) retiré(s) du tir (multi-sélection ; rien de coché = rien à faire).
+  if (kind === "drx") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      var kill = {};
+      (data.values || []).forEach(function (v) { kill[String(parseInt(v, 10))] = true; });
+      var ps = (draft.participants || []).filter(function (p, i) { return !kill[String(i)]; });
+      return patchDraft(draft.id, { participants: ps }).then(function (saved) {
+        respond(res, REPLY.UPDATE, draftPanelData(saved || draft));
+      });
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // ➕ Add player → modal (la suite se passe dans handleAddPlayerModal).
+  if (kind === "dra") {
+    respond(res, REPLY.MODAL, addPlayerModalData(parts[1]));
+    return Promise.resolve();
+  }
+
+  // ◀ Back to setup depuis l'écran formation.
+  if (kind === "drb") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      respond(res, REPLY.UPDATE, draftPanelData(draft));
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // 📢 / 🚀 depuis l'éditeur : on publie le BROUILLON (side + formations +
+  // joueurs tels qu'ils viennent d'être réglés), pas le plan du site.
+  if (kind === "drpost" || kind === "drl") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      if (kind === "drpost") {
+        return publishAndAck(res, body, {
+          content: variantTableMessage(draftRow(draft), draftVariant(draft), draft.mode,
+            { tag: draft.label || "" }),
+          allowed_mentions: { parse: [] },
+        });
+      }
+      return doLaunch(res, body, draftRow(draft), draftVariant(draft), draft.mode,
+        draft.label || "");
+    }).catch(function () { draftDbError(res); });
   }
 
   // Plan choisi (ou TOUS) → tableau(x).
@@ -492,10 +849,7 @@ function handleComponent(res, body) {
         respond(res, REPLY.UPDATE, launchVariantMenuData(nuke, variants, mode));
         return;
       }
-      var v = variants[0];
-      return resolveMentions(body.guild_id, participantNames(v)).then(function (resolved) {
-        return launchResponse(res, appId, token, nuke, v, mode, resolved, "");
-      });
+      return doLaunch(res, body, nuke, variants[0], mode, "");
     }).catch(function () { dbError(res); });
   }
 
@@ -506,9 +860,7 @@ function handleComponent(res, body) {
       var variants = variantsOf(nuke);
       var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
-      return resolveMentions(body.guild_id, participantNames(v)).then(function (resolved) {
-        return launchResponse(res, appId, token, nuke, v, mode, resolved, variantTag(v, idx, variants.length));
-      });
+      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length));
     }).catch(function () { dbError(res); });
   }
 
@@ -545,6 +897,35 @@ function emptyTableMsg(target) {
   return "⚠️ Nuke `" + target + "` has no readable participants. Please check it on the site.";
 }
 
+// Formations forcées à la main dans l'éditeur ("Setup") : elles écrasent celles
+// calculées par l'optimiseur. `rows` porte l'index d'origine du joueur (idx).
+function applyFormationLocks(rows, participants) {
+  (rows || []).forEach(function (r) {
+    var p = (participants || [])[r.idx];
+    if (p && p.formLock && p.formation) r.formation = String(p.formation);
+  });
+}
+
+// Formation retenue pour chaque joueur, dans l'ordre d'impact du tableau :
+// [{ id, name, formation, side }]. Sert aux messages "1 joueur = 1 formation".
+function assignmentsOf(variant, mode) {
+  var participants = (variant && variant.participants) || [];
+  var rows = mode === "raw"
+    ? optimizer.rawList(participants)
+    : optimizer.optimize(participants).rows;
+  applyFormationLocks(rows, participants);
+  return rows.map(function (r) {
+    var p = participants[r.idx] || {};
+    return {
+      id: r.id,
+      name: r.name,
+      formation: r.formation || p.formation || "",
+      // Côté du joueur s'il a le sien, sinon celui du plan (même règle que le site).
+      side: p.side || (variant && variant.side) || "",
+    };
+  });
+}
+
 // Tableau d'un PLAN. mode "syncro" (optimisé) ou "raw" (brut, non optimisé).
 // opts.maxAdj = budget ±s pour /optimise ; opts.tag = libellé du plan ("Plan 2").
 function variantTableMessage(row, variant, mode, opts) {
@@ -567,6 +948,7 @@ function variantTableMessage(row, variant, mode, opts) {
   }
 
   var result = optimizer.optimize(participants, opts.maxAdj);
+  applyFormationLocks(result.rows, participants);
   if (!result.rows.length) return emptyTableMsg(target);
   var header = "**TARGET " + target + "**" +
     (row.target_player ? " — " + row.target_player : "") +
@@ -616,10 +998,13 @@ function followup(appId, token, content) {
 }
 
 // Édite le message de la réponse INITIALE de l'interaction (le "le bot
-// réfléchit…" du DEFERRED) : PATCH .../messages/@original. Utilise le token
-// d'interaction (pas le bot token) → marche même si DISCORD_BOT_TOKEN est absent.
-function editOriginal(appId, token, content) {
+// réfléchit…" du DEFERRED, ou le panneau éphémère cliqué en DEFERRED_UPDATE) :
+// PATCH .../messages/@original. Utilise le token d'interaction (pas le bot
+// token) → marche même si DISCORD_BOT_TOKEN est absent.
+// `data` = texte simple, ou objet Discord complet ({ content, components… }).
+function editOriginal(appId, token, data) {
   if (!appId || !token) return Promise.resolve();
+  var payload = typeof data === "string" ? { content: data } : (data || {});
   var url = "https://discord.com/api/v10/webhooks/" + appId + "/" + token + "/messages/@original";
   return fetch(url, {
     method: "PATCH",
@@ -627,7 +1012,7 @@ function editOriginal(appId, token, content) {
       "Content-Type": "application/json",
       "User-Agent": "DiscordBot (https://optimisation-goat.vercel.app, 1.0)",
     },
-    body: JSON.stringify({ content: content }),
+    body: JSON.stringify(payload),
   }).then(function () {}, function () {});
 }
 
@@ -643,20 +1028,168 @@ function vercelWaitUntil(promise) {
   return false;
 }
 
-// Réponse à un /launch_* : récap qui PING + le tableau (mode choisi). Si tout
-// tient en 2000 car. → un seul message ; sinon le tableau part en followup.
-function launchResponse(res, appId, token, row, variant, mode, resolved, tag) {
-  var ping = buildLaunchPing(row, variant, resolved, tag);
-  var table = variantTableMessage(row, variant, mode, { tag: tag });
-  var ids = (resolved || []).map(function (r) { return r.id; }).filter(function (id) { return id; });
-  var allowed = { parse: [], users: ids.slice(0, 100) };
-  var combined = ping + "\n" + table;
-  if (combined.length <= 2000) {
-    res.status(200).json({ type: REPLY.MESSAGE, data: { content: combined, allowed_mentions: allowed } });
-    return Promise.resolve();
+// ============================================================
+//  PUBLICATION — poster POUR TOUT LE MONDE
+//  Discord force l'éphémère sur tout ce qui répond à un message éphémère
+//  (menus de /id_* et /launch_*) : impossible d'y répondre en public. On passe
+//  donc par le BOT (POST /channels/{id}/messages), qui poste un vrai message
+//  public. Sans bot token / sans droits, repli sur un followup (éphémère) pour
+//  ne pas perdre le contenu — l'utilisateur en est averti.
+// ============================================================
+
+function delay(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+// Poste dans le salon en encaissant le rate limit : sur 429, on attend le
+// retry_after annoncé par Discord et on réessaie une fois.
+function postChannelMessageRL(channelId, data) {
+  return postChannelMessage(channelId, data).catch(function (e) {
+    var msg = String((e && e.message) || "");
+    if (msg.indexOf("Discord 429") !== 0) throw e;
+    var wait = 1000;
+    try { wait = Math.ceil((JSON.parse(msg.slice(12)).retry_after || 1) * 1000); } catch (e2) { /* défaut */ }
+    return delay(Math.min(wait + 100, 5000)).then(function () {
+      return postChannelMessage(channelId, data);
+    });
+  });
+}
+
+// true = posté en PUBLIC dans le salon ; false = repli éphémère (followup).
+function postPublic(channelId, appId, token, data) {
+  if (!channelId) {
+    return followupData(appId, token, data).then(function () { return false; });
   }
-  res.status(200).json({ type: REPLY.MESSAGE, data: { content: ping, allowed_mentions: allowed } });
-  return followup(appId, token, table);
+  return postChannelMessageRL(channelId, data)
+    .then(function () { return true; })
+    .catch(function () {
+      return followupData(appId, token, data).then(function () { return false; });
+    });
+}
+
+// Poste une SUITE de messages dans l'ordre, espacés de POST_GAP_MS (limite
+// Discord ~5 messages / 5 s par salon). Renvoie false si l'un d'eux a dû
+// retomber en éphémère.
+function postSequence(channelId, appId, token, messages) {
+  var allPublic = true;
+  return (messages || []).reduce(function (chain, m, i) {
+    return chain
+      .then(function () { return i ? delay(POST_GAP_MS) : null; })
+      .then(function () { return postPublic(channelId, appId, token, m); })
+      .then(function (ok) { if (!ok) allPublic = false; });
+  }, Promise.resolve()).then(function () { return allPublic; });
+}
+
+function interactionChannelId(body) {
+  return body.channel_id || (body.channel && body.channel.id) || null;
+}
+
+// ACK adapté à l'origine : clic sur un composant → DEFERRED_UPDATE (le panneau
+// reste affiché tel quel) ; slash-command → DEFERRED éphémère.
+function deferFor(res, body) {
+  if (body.type === INTERACTION.COMPONENT) {
+    res.status(200).json({ type: REPLY.DEFERRED_UPDATE }); // pas de data : on garde le message
+    return;
+  }
+  respond(res, REPLY.DEFERRED, { flags: EPHEMERAL });
+}
+
+// Bouton "📢 Post table" : publie `data` dans le salon puis remplace le panneau
+// éphémère par un accusé de réception (et retire ses boutons).
+function publishAndAck(res, body, data) {
+  var appId = body.application_id, token = body.token;
+  deferFor(res, body);
+  var work = postPublic(interactionChannelId(body), appId, token, data)
+    .then(function (isPublic) {
+      return editOriginal(appId, token, {
+        content: isPublic
+          ? "✅ Table posted in this channel — everyone can see it."
+          : "⚠️ Couldn't post publicly (missing bot token or **Send Messages** permission) " +
+            "— the table was sent to you only.",
+        components: [],
+      });
+    })
+    .catch(function () {
+      return editOriginal(appId, token,
+        { content: "❌ Something went wrong while posting the table.", components: [] });
+    });
+  vercelWaitUntil(work);
+  return work;
+}
+
+// Un message PAR joueur : sa mention + la formation qui lui a été attribuée
+// (fichier uploadé sur le site pour ce couple side/type). C'est le "petit plus"
+// du récap : chacun reçoit son ping et son fichier.
+function formationMessages(variant, mode, resolved, files) {
+  var byName = {};
+  (resolved || []).forEach(function (r) {
+    byName[String(r.name || "").toLowerCase()] = r;
+  });
+  return assignmentsOf(variant, mode).slice(0, MAX_PLAYER_PINGS).map(function (a) {
+    var who = byName[String(a.name || "").toLowerCase()];
+    var mention = who ? who.text : "@" + (a.name || a.id || "player");
+    var type = formTypeOf(a.formation);
+    var file = pickFormationFile(files, a.side, a.formation);
+    var lines = [mention];
+    if (!type) {
+      lines.push("⚠️ **No formation set** — assign one with ⚙️ Setup before the next launch.");
+    } else {
+      lines.push("**Formation " + a.formation + "**" + (a.side ? " · " + a.side : ""));
+      if (file) {
+        if (file.name) lines.push(file.name);
+        lines.push(file.url);
+      } else {
+        lines.push("⚠️ No file uploaded for **" + (a.side || "?") + " / " + type +
+          "** — add it on the site (Formations tab).");
+      }
+    }
+    return {
+      content: lines.join("\n"),
+      allowed_mentions: who && who.id ? { parse: [], users: [who.id] } : { parse: [] },
+    };
+  });
+}
+
+// 🚀 LAUNCH : publie dans le salon le récap qui PING + le tableau (mode choisi),
+// puis un message par joueur avec sa formation. Le tout via le bot → visible de
+// tous. Le panneau éphémère du lanceur devient un simple accusé de réception.
+function doLaunch(res, body, row, variant, mode, tag) {
+  var appId = body.application_id, token = body.token;
+  var channelId = interactionChannelId(body);
+  deferFor(res, body);
+
+  var work = Promise.all([
+    resolveMentions(body.guild_id, participantNames(variant)),
+    fetchFormationFiles(),
+  ]).then(function (arr) {
+    var resolved = arr[0] || [], files = arr[1] || [];
+    var ping = buildLaunchPing(row, variant, resolved, tag);
+    var table = variantTableMessage(row, variant, mode, { tag: tag });
+    var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
+    var allowed = { parse: [], users: ids.slice(0, 100) };
+    var combined = ping + "\n" + table;
+    // Un seul message si ça tient en 2000 car., sinon récap puis tableau.
+    var msgs = combined.length <= 2000
+      ? [{ content: combined, allowed_mentions: allowed }]
+      : [{ content: ping, allowed_mentions: allowed },
+         { content: table, allowed_mentions: { parse: [] } }];
+    msgs = msgs.concat(formationMessages(variant, mode, resolved, files));
+    return postSequence(channelId, appId, token, msgs).then(function (isPublic) {
+      return editOriginal(appId, token, {
+        content: isPublic
+          ? "🚀 Launched — table posted in this channel and every player pinged with their formation."
+          : "⚠️ Couldn't post publicly (missing bot token or **Send Messages** permission) " +
+            "— everything was sent to you only.",
+        components: [],
+      });
+    });
+  }).catch(function () {
+    return editOriginal(appId, token,
+      { content: "❌ Something went wrong while launching.", components: [] });
+  });
+
+  vercelWaitUntil(work);
+  return work;
 }
 
 // ============================================================
@@ -984,9 +1517,30 @@ function handlePlanModal(res, body) {
   return work;
 }
 
+// Validation du modal "➕ Add player" : on ajoute le joueur au brouillon puis
+// on ré-affiche l'éditeur (UPDATE du panneau d'où venait le bouton).
+function handleAddPlayerModal(res, body, draftId) {
+  var vals = modalValues(body);
+  return fetchDraft(draftId).then(function (draft) {
+    if (!draft) { draftGone(res); return; }
+    var ps = draft.participants || [];
+    ps.push(cloneParticipant({
+      id: (vals.pid || "").trim(),
+      name: (vals.name || "").trim(),
+      type: /cap/i.test(vals.type || "") ? "cap" : "army",
+      qty: (vals.qty || "").trim(),
+      march: (vals.march || "").trim(),
+    }));
+    return patchDraft(draft.id, { participants: ps }).then(function (saved) {
+      respond(res, REPLY.UPDATE, draftPanelData(saved || draft));
+    });
+  }).catch(function () { draftDbError(res); });
+}
+
 function handleModalSubmit(res, body) {
   var cid = (body.data && body.data.custom_id) || "";
   if (cid === "plan_modal") return handlePlanModal(res, body);
+  if (cid.indexOf("dram:") === 0) return handleAddPlayerModal(res, body, cid.slice(5));
   reply(res, "Unknown modal.", true);
   return Promise.resolve();
 }
@@ -1048,12 +1602,14 @@ function handler(req, res) {
       }
 
       // /id_syncro | /id_same_time => navigation ÉPHÉMÈRE (toi seul la vois) :
-      // catégorie -> village -> plan ; le tableau choisi, lui, est PUBLIC.
+      // catégorie -> village -> APERÇU du tableau. Rien n'est visible des autres
+      // avant de cliquer 📢 Post table (tableau public) ou 🚀 Launch (tableau
+      // public + pings + formations) ; ⚙️ Setup ouvre l'éditeur avant publication.
       if (cmd === "id_syncro" || cmd === "id_same_time") {
         return fetchCategories()
           .then(function (cats) {
             var data = categoryMenuData(cats, MODE[cmd]);
-            data.flags = EPHEMERAL; // menu privé ; tu publies en choisissant un plan
+            data.flags = EPHEMERAL; // menu privé ; c'est le bouton qui publie
             respond(res, REPLY.MESSAGE, data);
           })
           .catch(function () { dbError(res); });
@@ -1086,10 +1642,7 @@ function handler(req, res) {
             respond(res, REPLY.MESSAGE, menu);
             return;
           }
-          var v = variants[0];
-          return resolveMentions(body.guild_id, participantNames(v)).then(function (resolved) {
-            return launchResponse(res, body.application_id, body.token, nuke, v, lmode, resolved, "");
-          });
+          return doLaunch(res, body, nuke, variants[0], lmode, "");
         }).catch(function () { dbError(res); });
       }
 
