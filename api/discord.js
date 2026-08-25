@@ -981,11 +981,11 @@ function handleComponent(res, body) {
             allowed_mentions: { parse: [], users: pingIds.slice(0, 100) },
           });
         })
-        .then(function (isPublic) {
+        .then(function (why) {
           return editOriginal(chkApp, chkToken, {
-            content: isPublic
-              ? "✅ Ready check posted here — click it again anytime for a fresh one."
-              : "⚠️ Couldn't post it publicly (bot token or **Send Messages**).",
+            content: why
+              ? "⚠️ Couldn't post the ready check publicly — " + why + "."
+              : "✅ Ready check posted here — click it again anytime for a fresh one.",
             components: [],
           });
         });
@@ -1965,15 +1965,34 @@ function downloadAttachment(attach) {
   }).catch(function () { return null; });
 }
 
-// true = posté en PUBLIC dans le salon ; false = repli éphémère (followup).
+// Traduit l'erreur brute de Discord en une phrase qui dit quoi faire.
+function postFailureReason(err) {
+  var msg = String((err && err.message) || err || "unknown error");
+  if (msg.indexOf("DISCORD_BOT_TOKEN") >= 0) {
+    return "the bot token is missing on the server (Vercel env `DISCORD_BOT_TOKEN`)";
+  }
+  if (msg.indexOf("50013") >= 0 || /Missing Permissions/i.test(msg)) {
+    return "the bot lacks **Send Messages** in this channel";
+  }
+  if (msg.indexOf("50001") >= 0 || /Missing Access/i.test(msg)) {
+    return "the bot can't see this channel (**View Channel**)";
+  }
+  if (msg.indexOf("50035") >= 0) return "Discord rejected the message: " + msg;
+  return msg.slice(0, 300);
+}
+
+// null = posté en PUBLIC dans le salon ; sinon la RAISON de l'échec (le
+// contenu est alors parti en éphémère, pour ne rien perdre).
 function postPublic(channelId, appId, token, data, file) {
   if (!channelId) {
-    return followupData(appId, token, data).then(function () { return false; });
+    return followupData(appId, token, data)
+      .then(function () { return "no channel on this interaction"; });
   }
   return postChannelMessageRL(channelId, data, file)
-    .then(function () { return true; })
-    .catch(function () {
-      return followupData(appId, token, data).then(function () { return false; });
+    .then(function () { return null; })
+    .catch(function (e) {
+      var why = postFailureReason(e);
+      return followupData(appId, token, data).then(function () { return why; });
     });
 }
 
@@ -1984,7 +2003,7 @@ function postPublic(channelId, appId, token, data, file) {
 // on le JOINT. Si le téléchargement échoue, on remet le lien en clair dans le
 // texte plutôt que d'envoyer un message sans formation.
 function postSequence(channelId, appId, token, messages) {
-  var allPublic = true;
+  var failure = null; // première raison d'échec rencontrée
   return (messages || []).reduce(function (chain, m, i) {
     return chain
       .then(function () { return i ? delay(POST_GAP_MS) : null; })
@@ -1995,8 +2014,8 @@ function postSequence(channelId, appId, token, messages) {
         if (m.attach && !file) data.content += "\n" + m.attach.url;
         return postPublic(channelId, appId, token, data, file);
       })
-      .then(function (ok) { if (!ok) allPublic = false; });
-  }, Promise.resolve()).then(function () { return allPublic; });
+      .then(function (why) { if (why && !failure) failure = why; });
+  }, Promise.resolve()).then(function () { return failure; });
 }
 
 function interactionChannelId(body) {
@@ -2029,12 +2048,11 @@ function publishAndAck(res, body, data) {
   var appId = body.application_id, token = body.token;
   deferFor(res, body);
   var work = postPublic(interactionChannelId(body), appId, token, data)
-    .then(function (isPublic) {
+    .then(function (why) {
       return editOriginal(appId, token, {
-        content: isPublic
-          ? "✅ Table posted in this channel — everyone can see it."
-          : "⚠️ Couldn't post publicly (missing bot token or **Send Messages** permission) " +
-            "— the table was sent to you only.",
+        content: why
+          ? "⚠️ Couldn't post it publicly — " + why + ". The table was sent to you only."
+          : "✅ Table posted in this channel — everyone can see it.",
         components: [],
       });
     })
@@ -2205,12 +2223,11 @@ function doLaunch(res, body, row, variant, mode, tag, origin) {
       : [{ content: ping, allowed_mentions: allowed, components: ready },
          { content: table, allowed_mentions: { parse: [] } }];
     msgs = msgs.concat(formationMessages(variant, mode, resolved, files));
-    return postSequence(channelId, appId, token, msgs).then(function (isPublic) {
+    return postSequence(channelId, appId, token, msgs).then(function (why) {
       return editOriginal(appId, token, {
-        content: isPublic
-          ? "🚀 Launched — table posted in this channel and every player pinged with their formation."
-          : "⚠️ Couldn't post publicly (missing bot token or **Send Messages** permission) " +
-            "— everything was sent to you only.",
+        content: why
+          ? "⚠️ Couldn't post it publicly — " + why + ". Everything was sent to you only."
+          : "🚀 Launched — table posted in this channel and every player pinged with their formation.",
         components: [],
       });
     });
