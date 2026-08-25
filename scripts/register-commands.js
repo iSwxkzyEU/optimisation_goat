@@ -56,6 +56,28 @@ var villageOptionLaunch = {
 // PUT groupé : la liste ci-dessous REMPLACE toutes les commandes existantes.
 var commands = [
   {
+    // Associe un pseudo EN JEU à son compte Discord : indispensable quand les
+    // deux noms diffèrent, sinon le bot ne sait pas qui pinguer.
+    name: "link",
+    description: "Link your in-game name to your Discord account (so the bot can ping you)",
+    options: [{
+      type: 3, // STRING
+      name: "player",
+      description: "Your in-game name, exactly as it appears in the nuke table",
+      required: true,
+    }],
+  },
+  {
+    name: "unlink",
+    description: "Remove an in-game name from your Discord account (all of them if empty)",
+    options: [{
+      type: 3, // STRING
+      name: "player",
+      description: "In-game name to unlink (leave empty to remove them all)",
+      required: false,
+    }],
+  },
+  {
     // Ouvre un modal (cible + table d'attaque) puis poste une grille de
     // disponibilités HEURE DU JEU (06:00 -> 00:00) que chaque joueur coche.
     name: "plan",
@@ -122,8 +144,8 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commandes /plan, /id_syncro, /id_same_time, /launch_syncro, " +
-        "/launch_same_time et /optimise enregistrées " +
+      console.log("✅ Commandes /link, /unlink, /plan, /id_syncro, /id_same_time, " +
+        "/launch_syncro, /launch_same_time et /optimise enregistrées " +
         (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
       console.log(body);
     });

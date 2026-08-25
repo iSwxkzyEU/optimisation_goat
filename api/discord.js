@@ -301,6 +301,45 @@ function patchDraft(id, patch) {
     .then(function (rows) { return (rows && rows[0]) || null; });
 }
 
+// --- /link : pseudo en jeu <-> compte Discord ---------------------------
+// Le bot retrouve les joueurs par leur pseudo. Quand le pseudo en jeu et le
+// pseudo Discord diffèrent, /link crée le lien une fois pour toutes.
+function fetchPlayerLinks() {
+  return sbGet("player_links?select=user_id,player,norm")
+    .catch(function () { return []; });
+}
+
+// { pseudo normalisé -> id Discord }. En cas de doublon, le premier gagne.
+function linkIndex(rows) {
+  var out = {};
+  (rows || []).forEach(function (r) {
+    if (r && r.norm && r.user_id && !out[r.norm]) out[r.norm] = String(r.user_id);
+  });
+  return out;
+}
+
+function savePlayerLink(userId, userName, player) {
+  return sbWrite("POST", "player_links?on_conflict=user_id,norm", {
+    user_id: userId,
+    norm: normName(player),
+    player: player,
+    user_name: userName,
+    updated_at: new Date().toISOString(),
+  }, { Prefer: "resolution=merge-duplicates,return=minimal" });
+}
+
+// Sans `player`, on retire TOUS les liens du joueur.
+function deletePlayerLinks(userId, player) {
+  var path = "player_links?user_id=eq." + encodeURIComponent(userId);
+  if (player) path += "&norm=eq." + encodeURIComponent(normName(player));
+  return sbDelete(path);
+}
+
+function fetchPlayerLinksOf(userId) {
+  return sbGet("player_links?select=player&order=player.asc&user_id=eq." +
+    encodeURIComponent(userId));
+}
+
 function reply(res, content, ephemeral) {
   res.status(200).json({
     type: REPLY.MESSAGE,
@@ -312,33 +351,72 @@ function reply(res, content, ephemeral) {
 // membres). Nécessite DISCORD_BOT_TOKEN (env) + bot présent dans le serveur.
 // Match EXACT (pseudo serveur, nom global, ou username) pour ne pas pinguer le
 // mauvais membre ; tout nom non résolu retombe en texte "@nom" (pas de ping).
+// Membre correspondant à un pseudo dans un résultat de recherche : d'abord
+// le nom EXACT, puis un rapprochement SOUPLE (casse, espaces et ponctuation
+// ignorés) — "Master_snidel" sur Discord répond à "Mastersnidel" en jeu.
+function matchMember(members, name) {
+  var lc = String(name || "").toLowerCase();
+  var norm = normName(name);
+  function names(m) {
+    var u = m.user || {};
+    return [m.nick, u.global_name, u.username];
+  }
+  var exact = (members || []).find(function (m) {
+    return names(m).some(function (n) { return n && n.toLowerCase() === lc; });
+  });
+  var hit = exact || (members || []).find(function (m) {
+    return names(m).some(function (n) { return n && normName(n) === norm; });
+  });
+  return (hit && hit.user && hit.user.id) || null;
+}
+
+// La recherche Discord est un PRÉFIXE : "Varju bence" ne trouve pas
+// "varjubence.". On réessaie donc avec les premières lettres seules.
+function memberPrefix(name) {
+  return normName(name).slice(0, 4);
+}
+
+function searchMembers(guildId, token, query) {
+  if (!query) return Promise.resolve([]);
+  var url = "https://discord.com/api/v10/guilds/" + guildId +
+    "/members/search?limit=10&query=" + encodeURIComponent(query);
+  return fetch(url, { headers: { Authorization: "Bot " + token } })
+    .then(function (r) { return r.ok ? r.json() : []; })
+    .catch(function () { return []; });
+}
+
 function resolveMentions(guildId, names) {
   var token = process.env.DISCORD_BOT_TOKEN;
-  if (!guildId || !token || !names.length) {
-    return Promise.resolve(names.map(function (n) {
-      return { name: n, text: "@" + n, id: null };
+  var plain = names.map(function (n) {
+    return { name: n, text: "@" + n, id: null };
+  });
+  if (!guildId || !token || !names.length) return Promise.resolve(plain);
+
+  // 1) Les liens déclarés avec /link priment : ils sont toujours justes.
+  return fetchPlayerLinks().then(function (links) {
+    var byNorm = linkIndex(links);
+    return Promise.all(names.map(function (name) {
+      var linked = byNorm[normName(name)];
+      if (linked) return { name: name, text: "<@" + linked + ">", id: linked };
+      // 2) Sinon, recherche par pseudo, puis repli sur un préfixe plus court.
+      return searchMembers(guildId, token, name)
+        .then(function (members) {
+          var id = matchMember(members, name);
+          if (id) return id;
+          var prefix = memberPrefix(name);
+          if (!prefix || prefix.toLowerCase() === String(name).toLowerCase()) return null;
+          return searchMembers(guildId, token, prefix).then(function (more) {
+            return matchMember(more, name);
+          });
+        })
+        .then(function (id) {
+          return id
+            ? { name: name, text: "<@" + id + ">", id: id }
+            : { name: name, text: "@" + name, id: null };
+        })
+        .catch(function () { return { name: name, text: "@" + name, id: null }; });
     }));
-  }
-  return Promise.all(names.map(function (name) {
-    var url = "https://discord.com/api/v10/guilds/" + guildId +
-      "/members/search?limit=5&query=" + encodeURIComponent(name);
-    return fetch(url, { headers: { Authorization: "Bot " + token } })
-      .then(function (r) { return r.ok ? r.json() : []; })
-      .then(function (members) {
-        var lc = name.toLowerCase();
-        var hit = (members || []).find(function (m) {
-          var u = m.user || {};
-          return (m.nick && m.nick.toLowerCase() === lc) ||
-                 (u.global_name && u.global_name.toLowerCase() === lc) ||
-                 (u.username && u.username.toLowerCase() === lc);
-        });
-        var id = hit && hit.user && hit.user.id;
-        return id
-          ? { name: name, text: "<@" + id + ">", id: id }
-          : { name: name, text: "@" + name, id: null };
-      })
-      .catch(function () { return { name: name, text: "@" + name, id: null }; });
-  }));
+  }).catch(function () { return plain; });
 }
 
 // Appel REST authentifié au bot (token Bot). `path` commence par "/". Renvoie le
@@ -744,6 +822,12 @@ function draftGone(res) {
   reply(res, "❌ This setup is no longer available — run the command again.", true);
 }
 
+// La table player_links n'existe pas encore (SQL pas rejoué).
+function linkDbError(res) {
+  reply(res, "⚠️ /link needs the `player_links` table — re-run `supabase-setup.sql` " +
+    "in Supabase (SQL Editor), then try again.", true);
+}
+
 // La table nuke_drafts n'existe pas encore (SQL pas rejoué) ou Supabase répond mal.
 function draftDbError(res) {
   reply(res, "⚠️ Setup needs the `nuke_drafts` table — re-run `supabase-setup.sql` " +
@@ -1079,8 +1163,15 @@ function handleComponent(res, body) {
           components: (m && m.components) || readyComponents(),
           allowed_mentions: { parse: [] },
         }).then(function () {
+          // On retient le lien : la prochaine fois il sera pingué directement,
+          // sans repasser par ce menu. Échec silencieux (table absente).
+          return savePlayerLink(claimer.id, claimer.name, value)
+            .then(function () { return true; }, function () { return false; });
+        }).then(function (saved) {
           return editOriginal(appId2, token2, {
-            content: "✅ You're marked **ready** as **" + value + "**.",
+            content: "✅ You're marked **ready** as **" + value + "**." +
+              (saved ? "\n🔗 Saved — you'll be pinged as **" + value +
+                "** from now on (`/unlink` to undo)." : ""),
             components: [],
           });
         }).then(function () {
@@ -2266,6 +2357,38 @@ function handler(req, res) {
         id_syncro: "syncro", id_same_time: "raw",
         launch_syncro: "syncro", launch_same_time: "raw",
       };
+
+      // /link <player> => associe un pseudo en jeu à SON compte Discord, pour
+      // être pingué correctement même si les deux noms diffèrent.
+      if (cmd === "link" || cmd === "unlink") {
+        var me = interactionUser(body);
+        var pOpt = (body.data.options || []).find(function (o) { return o.name === "player"; });
+        var pName = pOpt ? String(pOpt.value).trim() : "";
+
+        if (cmd === "unlink") {
+          return deletePlayerLinks(me.id, pName)
+            .then(function () {
+              reply(res, pName
+                ? "🔗 **" + pName + "** is no longer linked to your account."
+                : "🔗 All your in-game names have been unlinked.", true);
+            })
+            .catch(function () { linkDbError(res); });
+        }
+        if (!pName) {
+          reply(res, "Give your in-game name, e.g. `/link player: Mastersnidel`.", true);
+          return;
+        }
+        return savePlayerLink(me.id, me.name, pName)
+          .then(function () { return fetchPlayerLinksOf(me.id); })
+          .then(function (rows) {
+            var all = (rows || []).map(function (r) { return "**" + r.player + "**"; });
+            reply(res, "✅ **" + pName + "** is now linked to your Discord account — " +
+              "you'll be pinged for it in every nuke, even if your names differ.\n" +
+              "Linked so far: " + (all.join(", ") || "**" + pName + "**") +
+              "  ·  `/unlink` to remove.", true);
+          })
+          .catch(function () { linkDbError(res); });
+      }
 
       // /plan => ouvre un modal (cible + table d'attaque). La suite (création
       // du plan + grille de dispos) se fait à la validation du modal.

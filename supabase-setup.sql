@@ -127,6 +127,23 @@ create table if not exists public.nuke_drafts (
   created_at    timestamptz default now()
 );
 
+-- ---------- /link : pseudo en jeu <-> compte Discord ----------
+-- Le bot associe les joueurs d'un plan à leurs membres Discord par leur pseudo.
+-- Quand les deux ne correspondent pas ("Mastersnidel" en jeu, "LeBoss" sur
+-- Discord), le joueur fait /link une fois et il est pingué correctement pour
+-- toujours. Une ligne par couple (compte Discord, pseudo en jeu) : un joueur
+-- avec plusieurs comptes en jeu peut en lier plusieurs.
+--   norm = pseudo en jeu réduit à ses lettres/chiffres minuscules (recherche).
+create table if not exists public.player_links (
+  user_id    text not null,   -- id Discord
+  norm       text not null,   -- pseudo en jeu normalisé
+  player     text not null,   -- pseudo en jeu tel qu'il a été saisi
+  user_name  text,            -- pseudo Discord au moment du lien (info)
+  updated_at timestamptz default now(),
+  primary key (user_id, norm)
+);
+create index if not exists player_links_norm_idx on public.player_links (norm);
+
 -- ---------- Sécurité (RLS) ----------
 -- Le site est protégé par un mot de passe commun (pas de comptes individuels),
 -- donc on autorise la clé publique "anon" à tout lire/écrire.
@@ -137,6 +154,7 @@ alter table public.nuke_history      enable row level security;
 alter table public.plans             enable row level security;
 alter table public.plan_availability enable row level security;
 alter table public.nuke_drafts       enable row level security;
+alter table public.player_links      enable row level security;
 
 drop policy if exists "anon all nukes"             on public.nukes;
 drop policy if exists "anon all formations"        on public.formations;
@@ -145,6 +163,7 @@ drop policy if exists "anon all nuke_history"      on public.nuke_history;
 drop policy if exists "anon all plans"             on public.plans;
 drop policy if exists "anon all plan_availability" on public.plan_availability;
 drop policy if exists "anon all nuke_drafts"       on public.nuke_drafts;
+drop policy if exists "anon all player_links"      on public.player_links;
 
 create policy "anon all nukes"             on public.nukes             for all using (true) with check (true);
 create policy "anon all formations"        on public.formations        for all using (true) with check (true);
@@ -153,6 +172,7 @@ create policy "anon all nuke_history"      on public.nuke_history      for all u
 create policy "anon all plans"             on public.plans             for all using (true) with check (true);
 create policy "anon all plan_availability" on public.plan_availability for all using (true) with check (true);
 create policy "anon all nuke_drafts"       on public.nuke_drafts       for all using (true) with check (true);
+create policy "anon all player_links"      on public.player_links      for all using (true) with check (true);
 
 -- ---------- Stockage des fichiers (buckets publics) ----------
 insert into storage.buckets (id, name, public) values ('targets', 'targets', true)
