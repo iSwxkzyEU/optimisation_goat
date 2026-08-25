@@ -39,12 +39,19 @@
   function ic(name) { return '<i data-lucide="' + name + '"></i>'; }
   function refreshIcons() { if (window.lucide) window.lucide.createIcons(); }
 
-  // Devine le type de formation (50 / 90 / 110 / Barrack) depuis le texte
-  // d'une ligne de joueur ("90 form", "F110NOCAPS", "Barrack", …). null sinon.
+  // Type de formation d'une ligne de joueur. D'abord le NOM EXACT d'un type
+  // existant (y compris ceux que tu as ajoutés : "120", "Wall"…), sinon on le
+  // devine depuis le texte ("90 form", "F110NOCAPS", "Barrack"). null sinon.
   function formTypeOf(formation) {
-    var s = String(formation || "").toLowerCase();
-    if (/barrack/.test(s)) return "Barrack";
-    var m = s.match(/(110|90|50)/);
+    var s = String(formation || "").trim();
+    if (!s) return null;
+    var hit = Store.formTypes().find(function (t) {
+      return t.toLowerCase() === s.toLowerCase();
+    });
+    if (hit) return hit;
+    var lc = s.toLowerCase();
+    if (/barrack/.test(lc)) return "Barrack";
+    var m = lc.match(/(110|90|50)/);
     return m ? m[1] : null;
   }
 
@@ -454,11 +461,12 @@
     }).join("");
 
     var sideForms = Store.getFormations(v.side) || {};
-    var anyFile = Store.FORM_TYPES.some(function (t) {
+    var formTypeList = Store.formTypes();
+    var anyFile = formTypeList.some(function (t) {
       return (sideForms[t] || []).length;
     });
     var formationFiles = anyFile
-      ? Store.FORM_TYPES.map(function (t) {
+      ? formTypeList.map(function (t) {
           var files = sideForms[t] || [];
           var chips = files.length
             ? files.map(function (f) {
@@ -624,7 +632,7 @@
       var sel = p && p.type === t ? " selected" : "";
       return '<option value="' + t + '"' + sel + ">" + t + "</option>";
     }).join("");
-    var formOpts = Store.FORM_TYPES.map(function (t) {
+    var formOpts = Store.formTypes().map(function (t) {
       return '<option value="' + t + '">';
     }).join("");
     // Côté personnel : vide = celui du plan
@@ -1232,9 +1240,11 @@
   /* ---------- Vue : Formations ----------------------------------------- */
 
   function renderFormations() {
+    // Types affichés : les 4 d'origine + ceux ajoutés (base ou slot vide local).
+    var types = Store.formTypes();
     var blocks = SIDES.map(function (side) {
-      // Pour chaque côté : un encart par type (50 / 90 / 110 / Barrack)
-      var typeRows = Store.FORM_TYPES.map(function (t) {
+      // Pour chaque côté : un encart par type (50 / 90 / 110 / Barrack, …)
+      var typeRows = types.map(function (t) {
         var files = Store.getFormations(side, t) || [];
         var list = files.length
           ? files.map(function (f) {
@@ -1244,12 +1254,19 @@
                 '" data-type="' + t + '" title="Delete">✕</button></div>';
             }).join("")
           : '<span class="muted small">No files.</span>';
+        // Un type ajouté par nous et encore SANS aucun fichier peut être retiré ;
+        // dès qu'il a un fichier, c'est la corbeille du fichier qui le fait partir.
+        var removable = !Store.isBuiltinFormType(t) && !Store.formationTypeHasFiles(t);
+        var killSlot = removable
+          ? '<button class="x small" data-del-type="' + esc(t) +
+            '" title="Remove this empty formation">✕</button>'
+          : "";
         return (
           '<div class="ftype">' +
             '<div class="ftype-head"><span class="form-type-badge">' + esc(t) + "</span>" +
-              '<label class="upload-mini" title="Add a ' + side + "/" + t + ' file">' +
-                ic("plus") + '<input type="file" data-upload-side="' + side +
-                '" data-upload-type="' + t + '" hidden></label>' +
+              '<label class="upload-mini" title="Add a ' + esc(side) + "/" + esc(t) + ' file">' +
+                ic("plus") + '<input type="file" data-upload-side="' + esc(side) +
+                '" data-upload-type="' + esc(t) + '" hidden></label>' + killSlot +
             "</div>" +
             '<div class="file-list col">' + list + "</div>" +
           "</div>"
@@ -1266,11 +1283,33 @@
     }).join("");
 
     el.view.innerHTML =
-      '<div class="page-head"><h2>Formations</h2></div>' +
-      '<p class="muted intro">Organize your <b>.cas</b> files by side then by type ' +
-        "(50 / 90 / 110 / Barrack). On a nuke, each player automatically gets " +
-        "the file matching their side and type.</p>" +
+      '<div class="page-head"><h2>Formations</h2>' +
+        '<button class="btn primary" id="add-form-type">' + ic("plus") +
+          " New formation</button></div>" +
+      '<p class="muted intro">Organize your <b>.cas</b> files by side then by formation ' +
+        "(50 / 90 / 110 / Barrack — add your own with <b>New formation</b>). " +
+        "On a nuke, each player automatically gets the file matching their side " +
+        "and formation.</p>" +
       '<div class="formations-grid">' + blocks + "</div>";
+
+    document.getElementById("add-form-type").onclick = function () {
+      var name = window.prompt("Name of the new formation (e.g. 120, Wall, Siege):", "");
+      if (name == null) return;
+      name = name.trim();
+      if (!name) return;
+      if (!Store.addFormationType(name)) {
+        alert("“" + name + "” already exists.");
+        return;
+      }
+      renderFormations();
+    };
+
+    el.view.querySelectorAll("[data-del-type]").forEach(function (b) {
+      b.onclick = function () {
+        Store.removeFormationType(b.dataset.delType);
+        renderFormations();
+      };
+    });
 
     el.view.querySelectorAll("[data-upload-side]").forEach(function (inp) {
       inp.onchange = function (e) {

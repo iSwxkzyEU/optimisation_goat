@@ -288,6 +288,78 @@
     });
   }
 
+  /* --- Types de formation (50 / 90 / 110 / Barrack + les tiens) ------
+     La colonne "type" de la table formations est libre : ajouter un type
+     ne demande AUCUNE migration. Un type n'existe vraiment en base qu'à
+     partir de son 1ᵉʳ fichier, donc on garde les slots encore VIDES dans le
+     navigateur pour qu'ils survivent à un rechargement de la page. */
+  var EXTRA_TYPES_KEY = "gwp.formTypes";
+
+  function loadExtraTypes() {
+    try {
+      var arr = JSON.parse(window.localStorage.getItem(EXTRA_TYPES_KEY) || "[]");
+      return arr && arr.length ? arr : [];
+    } catch (e) { return []; }
+  }
+  function saveExtraTypes(list) {
+    try { window.localStorage.setItem(EXTRA_TYPES_KEY, JSON.stringify(list)); } catch (e) { /* mode privé */ }
+  }
+
+  // Liste complète, sans doublon, dans un ordre stable : les 4 d'origine,
+  // puis ceux trouvés en base, puis les slots vides créés localement.
+  function formTypes() {
+    var out = [], seen = {};
+    function push(t) {
+      t = String(t == null ? "" : t).trim();
+      var k = t.toLowerCase();
+      if (!t || seen[k]) return;
+      seen[k] = true;
+      out.push(t);
+    }
+    FORM_TYPES.forEach(push);
+    Object.keys(cache.formations).forEach(function (side) {
+      Object.keys(cache.formations[side] || {}).forEach(push);
+    });
+    loadExtraTypes().forEach(push);
+    return out;
+  }
+
+  // Crée un slot vide. false si le nom est vide ou déjà pris.
+  function addFormationType(name) {
+    name = String(name || "").trim();
+    if (!name) return false;
+    var taken = formTypes().some(function (t) {
+      return t.toLowerCase() === name.toLowerCase();
+    });
+    if (taken) return false;
+    var extra = loadExtraTypes();
+    extra.push(name);
+    saveExtraTypes(extra);
+    return true;
+  }
+
+  // Retire un slot vide créé localement (un type qui a des fichiers reste
+  // tant qu'il en reste au moins un).
+  function removeFormationType(name) {
+    saveExtraTypes(loadExtraTypes().filter(function (t) {
+      return String(t).toLowerCase() !== String(name).toLowerCase();
+    }));
+  }
+
+  // Ce type a-t-il au moins un fichier, tous côtés confondus ?
+  function formationTypeHasFiles(type) {
+    return Object.keys(cache.formations).some(function (side) {
+      return ((cache.formations[side] || {})[type] || []).length > 0;
+    });
+  }
+
+  // Type d'origine (non supprimable) ?
+  function isBuiltinFormType(type) {
+    return FORM_TYPES.some(function (t) {
+      return t.toLowerCase() === String(type || "").toLowerCase();
+    });
+  }
+
   /* --- Formations (lecture synchrone depuis le cache) --------------- */
   function getFormations(side, type) {
     if (!side) return cache.formations;
@@ -348,6 +420,11 @@
     addHistoryEntry: addHistoryEntry,
     deleteHistoryEntry: deleteHistoryEntry,
     getFormations: getFormations,
+    formTypes: formTypes,
+    addFormationType: addFormationType,
+    removeFormationType: removeFormationType,
+    formationTypeHasFiles: formationTypeHasFiles,
+    isBuiltinFormType: isBuiltinFormType,
     uploadFile: uploadFile,
     addFormationFile: addFormationFile,
     deleteFormationFile: deleteFormationFile,

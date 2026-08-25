@@ -173,24 +173,48 @@ function fetchFormationFiles() {
     .catch(function () { return []; });
 }
 
-// Devine le type de formation (50 / 90 / 110 / Barrack) depuis le texte d'une
-// ligne de joueur ("90 form", "F110NOCAPS", "Barrack"…). null sinon.
+// Liste des types de formation : les 4 d'origine + tous ceux qui existent en
+// base (la colonne "type" est libre, on peut en ajouter depuis le site).
+function formTypesOf(files) {
+  var out = [], seen = {};
+  function push(t) {
+    t = String(t == null ? "" : t).trim();
+    var k = t.toLowerCase();
+    if (!t || seen[k]) return;
+    seen[k] = true;
+    out.push(t);
+  }
+  FORM_TYPES.forEach(push);
+  (files || []).forEach(function (f) { push(f && f.type); });
+  return out;
+}
+
+// Type de formation d'une ligne de joueur. D'abord le NOM EXACT d'un type
+// connu (y compris ceux ajoutés sur le site), sinon on le devine depuis le
+// texte ("90 form", "F110NOCAPS", "Barrack"). null sinon.
 // Miroir de formTypeOf() du site (js/app.js) : même règle des deux côtés.
-function formTypeOf(formation) {
-  var s = String(formation || "").toLowerCase();
-  if (/barrack/.test(s)) return "Barrack";
-  var m = s.match(/(110|90|50)/);
+function formTypeOf(formation, files) {
+  var s = String(formation || "").trim();
+  if (!s) return null;
+  var hit = formTypesOf(files).find(function (t) {
+    return t.toLowerCase() === s.toLowerCase();
+  });
+  if (hit) return hit;
+  var lc = s.toLowerCase();
+  if (/barrack/.test(lc)) return "Barrack";
+  var m = lc.match(/(110|90|50)/);
   return m ? m[1] : null;
 }
 
 // Fichier correspondant à (side, formation). null si rien d'uploadé pour ce couple.
 function pickFormationFile(files, side, formation) {
-  var type = formTypeOf(formation);
+  var type = formTypeOf(formation, files);
   if (!type) return null;
   var s = String(side || "").toUpperCase();
+  var t = type.toLowerCase();
   var hit = (files || []).find(function (f) {
     return f && f.url && String(f.side || "").toUpperCase() === s &&
-      String(f.type || "") === type;
+      String(f.type || "").toLowerCase() === t;
   });
   return hit || null;
 }
@@ -205,6 +229,15 @@ function createDraft(draft) {
 }
 function fetchDraft(id) {
   return sbGet("nuke_drafts?select=*&limit=1&id=eq." + encodeURIComponent(id))
+    .then(function (rows) { return (rows && rows[0]) || null; });
+}
+// Dernier brouillon d'un village pour un mode donné : c'est lui qu'on rouvre
+// quand on reclique ⚙️ Setup, pour ne PAS avoir à tout refaire à chaque tir
+// (même compo, mêmes formations, mêmes joueurs exclus). null s'il n'y en a pas.
+function findDraft(nukeId, mode) {
+  return sbGet("nuke_drafts?select=*&limit=1&order=created_at.desc" +
+    "&nuke_id=eq." + encodeURIComponent(nukeId) +
+    "&mode=eq." + encodeURIComponent(mode))
     .then(function (rows) { return (rows && rows[0]) || null; });
 }
 // PATCH + return=representation : une seule requête pour écrire ET relire.
@@ -492,6 +525,33 @@ function draftVariant(draft) {
   };
 }
 
+// Retrouve l'index d'un plan depuis son libellé ("Plan 2"). Sert au ♻️ Reset :
+// on stocke le libellé, pas l'index, donc on le ré-associe au chargement.
+function variantIndexByTag(variants, tag) {
+  if (!tag) return 0;
+  for (var i = 0; i < variants.length; i++) {
+    if (planName(variants[i], i) === tag) return i;
+  }
+  return 0;
+}
+
+// Brouillon NEUF construit depuis le plan enregistré sur le site.
+function draftFromNuke(nuke, mode, index, userId) {
+  var variants = variantsOf(nuke);
+  if (index < 0 || index >= variants.length) index = 0;
+  var v = variants[index];
+  return {
+    nuke_id: nuke.id,
+    target: nuke.target || "",
+    target_player: nuke.target_player || "",
+    mode: mode,
+    side: v.side || "",
+    label: variantTag(v, index, variants.length),
+    participants: (v.participants || []).map(cloneParticipant),
+    created_by: userId || "",
+  };
+}
+
 // Copie d'un joueur dans le brouillon (on ne garde que ce qui sert au calcul
 // et à l'affichage). formLock = formation imposée à la main dans l'éditeur.
 function cloneParticipant(p) {
@@ -555,11 +615,13 @@ function draftPanelData(draft) {
   }
   comps.push(row(
     button("dra:" + draft.id, "Add player", { emoji: "➕" }),
+    button("drz:" + draft.id, "Reset", { emoji: "♻️" }),
     button("drpost:" + draft.id, "Post table", { style: 1, emoji: "📢" }),
     button("drl:" + draft.id, "Launch", { style: 3, emoji: "🚀" })
   ));
-  var note = "*Setup — you alone see this. Changes apply to this launch only " +
-    "(the plan on the site is untouched).*";
+  var note = "*Setup — you alone see this. It is remembered for this village: " +
+    "next time, ⚙️ Setup reopens this exact comp. **♻️ Reset** starts again from " +
+    "the site's plan. The plan on the site is never modified.*";
   if ((draft.participants || []).length > 25) {
     note += "\n*(only the first 25 players can be edited here)*";
   }
@@ -572,15 +634,16 @@ function draftPanelData(draft) {
 
 // Deuxième écran de l'éditeur : la formation d'UN joueur. "Auto" rend la main
 // à l'optimiseur (90 pour la 1ʳᵉ armée, 110 pour les autres, 50 pour le cap).
-function draftFormPanelData(draft, index) {
+// `types` = liste des formations proposées (celles du site incluses).
+function draftFormPanelData(draft, index, types) {
   var p = (draft.participants || [])[index] || {};
   var options = [selected({
     label: "Auto (computed)", value: "auto",
     description: "Let the optimizer pick the formation",
   }, !p.formLock)];
-  FORM_TYPES.forEach(function (t) {
-    options.push(selected({ label: t, value: t },
-      !!p.formLock && String(p.formation) === t));
+  (types && types.length ? types : FORM_TYPES).slice(0, 24).forEach(function (t) {
+    options.push(selected({ label: String(t).slice(0, 100), value: String(t).slice(0, 100) },
+      !!p.formLock && String(p.formation) === String(t)));
   });
   return {
     content: "⚙️ **Formation for " + (p.name || p.id || "this player") + "** — pick one:",
@@ -688,27 +751,22 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
-  // ⚙️ Setup → crée un brouillon (copie du plan) et ouvre l'éditeur.
+  // ⚙️ Setup → ROUVRE le brouillon de ce village s'il existe (même compo,
+  // mêmes formations, mêmes joueurs exclus qu'au dernier tir), sinon en crée
+  // un depuis le plan du site.
   if (kind === "setup") {
-    return fetchNukeById(parts[2]).then(function (nuke) {
-      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-      var variants = variantsOf(nuke);
-      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
-      var v = variants[idx] || variants[0];
-      return createDraft({
-        nuke_id: nuke.id,
-        target: nuke.target || "",
-        target_player: nuke.target_player || "",
-        mode: mode,
-        side: v.side || "",
-        label: variantTag(v, idx, variants.length),
-        participants: (v.participants || []).map(cloneParticipant),
-        created_by: interactionUser(body).id,
-      }).then(function (draft) {
-        if (!draft) { draftDbError(res); return; }
-        respond(res, REPLY.UPDATE, draftPanelData(draft));
-      });
-    }).catch(function () { draftDbError(res); });
+    return Promise.all([fetchNukeById(parts[2]), findDraft(parts[2], mode)])
+      .then(function (arr) {
+        var nuke = arr[0], existing = arr[1];
+        if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+        if (existing) { respond(res, REPLY.UPDATE, draftPanelData(existing)); return; }
+        var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+        return createDraft(draftFromNuke(nuke, mode, idx, interactionUser(body).id))
+          .then(function (draft) {
+            if (!draft) { draftDbError(res); return; }
+            respond(res, REPLY.UPDATE, draftPanelData(draft));
+          });
+      }).catch(function () { draftDbError(res); });
   }
 
   // 🚀 Launch (depuis l'aperçu) → tableau public + ping + formations.
@@ -731,12 +789,33 @@ function handleComponent(res, body) {
     }).catch(function () { draftDbError(res); });
   }
 
-  // Joueur choisi → écran "quelle formation pour lui ?".
+  // Joueur choisi → écran "quelle formation pour lui ?" (types du site inclus).
   if (kind === "drp") {
+    return Promise.all([fetchDraft(parts[1]), fetchFormationFiles()])
+      .then(function (arr) {
+        var draft = arr[0];
+        if (!draft) { draftGone(res); return; }
+        var i = parseInt(value, 10); if (isNaN(i)) i = 0;
+        respond(res, REPLY.UPDATE, draftFormPanelData(draft, i, formTypesOf(arr[1])));
+      }).catch(function () { draftDbError(res); });
+  }
+
+  // ♻️ Reset → on repart du plan enregistré sur le site (on jette la compo).
+  if (kind === "drz") {
     return fetchDraft(parts[1]).then(function (draft) {
       if (!draft) { draftGone(res); return; }
-      var i = parseInt(value, 10); if (isNaN(i)) i = 0;
-      respond(res, REPLY.UPDATE, draftFormPanelData(draft, i));
+      if (!draft.nuke_id) { draftGone(res); return; }
+      return fetchNukeById(draft.nuke_id).then(function (nuke) {
+        if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+        var variants = variantsOf(nuke);
+        var idx = variantIndexByTag(variants, draft.label);
+        var fresh = draftFromNuke(nuke, draft.mode, idx, draft.created_by);
+        return patchDraft(draft.id, {
+          side: fresh.side, label: fresh.label, participants: fresh.participants,
+        }).then(function (saved) {
+          respond(res, REPLY.UPDATE, draftPanelData(saved || draft));
+        });
+      });
     }).catch(function () { draftDbError(res); });
   }
 
@@ -960,14 +1039,13 @@ function variantTableMessage(row, variant, mode, opts) {
   return fitDiscord(header, plain, renderTable(result.rows, { noColor: noColor }));
 }
 
-// Récap de tir (SANS tableau) : cible, side, mentions, GIF. tag = nom du plan.
+// Récap de tir (SANS tableau) : cible, side, mentions. tag = nom du plan.
 // `resolved` = sortie de resolveMentions() : [{ name, text:"<@id>"|"@nom", id }].
 function buildLaunchPing(row, variant, resolved, tag) {
   var target = row.target || "";
   var head = "🎯 **Target:** " + target + (row.target_player ? " — " + row.target_player : "") +
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
-  var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready." +
-    "\nhttps://media.giphy.com/media/zK5EHMbtwfW1O/giphy.gif";
+  var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.";
   var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
   var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
   if (body.length <= 2000) return body;
@@ -1128,20 +1206,20 @@ function formationMessages(variant, mode, resolved, files) {
   return assignmentsOf(variant, mode).slice(0, MAX_PLAYER_PINGS).map(function (a) {
     var who = byName[String(a.name || "").toLowerCase()];
     var mention = who ? who.text : "@" + (a.name || a.id || "player");
-    var type = formTypeOf(a.formation);
+    var type = formTypeOf(a.formation, files);
     var file = pickFormationFile(files, a.side, a.formation);
     var lines = [mention];
     if (!type) {
       lines.push("⚠️ **No formation set** — assign one with ⚙️ Setup before the next launch.");
+    } else if (file) {
+      // On reprend le NOM du fichier tel qu'il a été nommé sur le site.
+      lines.push("**" + (file.name || type) + "**  ·  " + type +
+        (a.side ? "  ·  " + a.side : ""));
+      lines.push(file.url);
     } else {
-      lines.push("**Formation " + a.formation + "**" + (a.side ? " · " + a.side : ""));
-      if (file) {
-        if (file.name) lines.push(file.name);
-        lines.push(file.url);
-      } else {
-        lines.push("⚠️ No file uploaded for **" + (a.side || "?") + " / " + type +
-          "** — add it on the site (Formations tab).");
-      }
+      lines.push("**" + type + "**" + (a.side ? "  ·  " + a.side : ""));
+      lines.push("⚠️ No file uploaded for **" + (a.side || "?") + " / " + type +
+        "** — add it on the site (Formations tab).");
     }
     return {
       content: lines.join("\n"),
