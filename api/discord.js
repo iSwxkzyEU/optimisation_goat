@@ -1272,15 +1272,15 @@ function handleComponent(res, body) {
           components: (m && m.components) || readyComponents(),
           allowed_mentions: { parse: [] },
         }).then(function () {
-          // On retient le lien : la prochaine fois il sera pingué directement,
-          // sans repasser par ce menu. Échec silencieux (table absente).
-          return savePlayerLink(claimer.id, claimer.name, value)
-            .then(function () { return true; }, function () { return false; });
-        }).then(function (saved) {
+          // RIEN n'est enregistré : une prise en charge ne vaut que pour CE
+          // tir. Le Parsec est occasionnel — imposer un /unlink derrière serait
+          // pire que le problème. /link reste la démarche volontaire pour un
+          // pseudo qui ne correspond jamais.
           return editOriginal(appId2, token2, {
-            content: "✅ You're marked **ready** as **" + value + "**." +
-              (saved ? "\n🔗 Saved — you'll be pinged as **" + value +
-                "** from now on (`/unlink` to undo)." : ""),
+            content: "✅ You're marked **ready** as **" + value + "** — for this " +
+              "strike only.\n*If **" + value + "** is your own account every time, " +
+              "run `/link player: " + value + "` once and you'll be recognised " +
+              "automatically.*",
             components: [],
           });
         }).then(function () {
@@ -1676,7 +1676,8 @@ function readyComponents() {
 function claimMenuData(channelId, messageId, names) {
   return {
     content: "🎮 **Who are you shooting for?**\nPick the player whose account you're " +
-      "firing from — repeat for each one you're running.",
+      "firing from — repeat for each one you're running.\n" +
+      "*This strike only — nothing is saved.*",
     flags: EPHEMERAL,
     components: [row(selectMenu("rdyc:" + channelId + ":" + messageId,
       "Pick your player", names.slice(0, 25).map(function (n) {
