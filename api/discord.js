@@ -458,6 +458,12 @@ function row() {
   return { type: 1, components: Array.prototype.slice.call(arguments) };
 }
 
+// Même chose, sous un autre nom : plusieurs fonctions ont un paramètre `row`
+// (la ligne Supabase d'une nuke) qui masque le helper ci-dessus.
+function rowOf() {
+  return row.apply(null, arguments);
+}
+
 // Menu déroulant string (type 3). 25 options max côté Discord.
 // opts.min / opts.max = min_values / max_values (multi-sélection).
 function selectMenu(customId, placeholder, options, opts) {
@@ -632,6 +638,7 @@ function previewData(nuke, variants, mode, index) {
     button("post:" + suffix, "Post table", { style: 1, emoji: "📢" }),
     button("setup:" + suffix, "Setup", { style: 2, emoji: "⚙️" }),
     button("chan:" + suffix, "Create channel", { style: 2, emoji: "📁" }),
+    button("rchk:" + suffix, "Ready check", { style: 2, emoji: "✅" }),
     button("lnow:" + suffix, "Launch", { style: 3, emoji: "🚀" })
   ));
   // Aucun ping : ceci n'affiche que la cible + le tableau. parse:[] neutralise
@@ -756,6 +763,8 @@ function draftPanelData(draft) {
     button("drpost:" + draft.id, "Post table", { style: 1, emoji: "📢" }),
     button("drl:" + draft.id, "Launch", { style: 3, emoji: "🚀" })
   ));
+  // 5ᵉ rangée (maximum Discord) : l'appel "prêt ?" seul.
+  comps.push(row(button("rchkd:" + draft.id, "Ready check", { style: 2, emoji: "✅" })));
   var note = "*Setup — you alone see this. It is remembered for this village: " +
     "next time, ⚙️ Setup reopens this exact comp. **♻️ Reset** starts again from " +
     "the site's plan. The plan on the site is never modified.*";
@@ -934,8 +943,58 @@ function handleComponent(res, body) {
       var variants = variantsOf(nuke);
       var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
-      return doCreateChannel(res, body, nuke, v, mode, variantTag(v, idx, variants.length));
+      return doCreateChannel(res, body, nuke, v, mode, variantTag(v, idx, variants.length),
+        "rchk:" + mode + ":" + nuke.id + ":" + idx);
     }).catch(function () { dbError(res); });
+  }
+
+  // ✅ Ready check → poste un appel "prêt ?" SEUL dans le salon courant.
+  // Répétable : rien d'autre n'est renvoyé (ni tableau, ni formations).
+  if (kind === "rchk" || kind === "rchkd") {
+    var chkCtx = kind === "rchkd"
+      ? fetchDraft(parts[1]).then(function (d) {
+          return d ? { row: draftRow(d), variant: draftVariant(d),
+                       mode: d.mode, tag: d.label || "" } : null;
+        })
+      : fetchNukeById(parts[2]).then(function (n) {
+          if (!n) return null;
+          var vs = variantsOf(n);
+          var i = parseInt(parts[3], 10); if (isNaN(i)) i = 0;
+          var vv = vs[i] || vs[0];
+          return { row: n, variant: vv, mode: mode, tag: variantTag(vv, i, vs.length) };
+        });
+    var chkApp = body.application_id, chkToken = body.token;
+    var chkChan = interactionChannelId(body);
+    deferFor(res, body);
+    var chkWork = chkCtx.then(function (ctx) {
+      if (!ctx) {
+        return editOriginal(chkApp, chkToken,
+          { content: "❌ This plan is no longer available.", components: [] });
+      }
+      return resolveMentions(body.guild_id, participantNames(ctx.variant))
+        .then(function (resolved) {
+          var pingIds = resolved.map(function (r) { return r.id; })
+            .filter(function (id) { return id; });
+          return postPublic(chkChan, chkApp, chkToken, {
+            content: buildReadyCheck(ctx.row, ctx.variant, resolved, ctx.tag),
+            components: readyComponents(),
+            allowed_mentions: { parse: [], users: pingIds.slice(0, 100) },
+          });
+        })
+        .then(function (isPublic) {
+          return editOriginal(chkApp, chkToken, {
+            content: isPublic
+              ? "✅ Ready check posted here — click it again anytime for a fresh one."
+              : "⚠️ Couldn't post it publicly (bot token or **Send Messages**).",
+            components: [],
+          });
+        });
+    }).catch(function () {
+      return editOriginal(chkApp, chkToken,
+        { content: "❌ Something went wrong while posting the ready check.", components: [] });
+    });
+    vercelWaitUntil(chkWork);
+    return chkWork;
   }
 
   // 🚀 Launch (depuis l'aperçu) → tableau public + ping + formations.
@@ -1029,7 +1088,7 @@ function handleComponent(res, body) {
     return fetchDraft(parts[1]).then(function (draft) {
       if (!draft) { draftGone(res); return; }
       return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
-        draft.mode, draft.label || "");
+        draft.mode, draft.label || "", "rchkd:" + draft.id);
     }).catch(function () { draftDbError(res); });
   }
 
@@ -1675,6 +1734,28 @@ function announceAllReady(channelId, appId, token, content, ready) {
   });
 }
 
+// Roster de départ : TOUS les joueurs du plan sont attendus, y compris ceux
+// dont le pseudo n'a pas été retrouvé (ils s'identifieront à leur 1ᵉʳ clic).
+function readyEntriesOf(resolved) {
+  return (resolved || []).map(function (r) {
+    return r.id ? { id: r.id } : { name: r.name };
+  }).filter(function (e) { return e.id || e.name; });
+}
+
+// Appel "prêt ?" SEUL : en-tête, bloc et les deux boutons. Ni tableau ni
+// formations — dans un salon de nuke ils ont déjà été postés une fois, inutile
+// de tout renvoyer à chaque appel. Même en-tête "🎯 **Target:**" que le tir,
+// pour que l'annonce finale sache de quelle cible il s'agit.
+function buildReadyCheck(row, variant, resolved, tag) {
+  var head = "🎯 **Target:** " + (row.target || "") +
+    (row.target_player ? " — " + row.target_player : "") +
+    "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
+  var entries = readyEntriesOf(resolved);
+  if (!entries.length) return head + "\n\n*No player in this plan yet.*";
+  var body = head + "\n\nWho's in? Hit ✅ **I'm ready** below.\n\n" + readyBlock([], entries);
+  return body.length <= 2000 ? body : head + "\n\n" + readyBlock([], entries);
+}
+
 // Cible relue depuis l'en-tête du message de tir (pour l'annonce finale).
 function targetOfPing(content) {
   var m = /^🎯 \*\*Target:\*\* (.+)$/m.exec(String(content || ""));
@@ -1687,11 +1768,7 @@ function buildLaunchPing(row, variant, resolved, tag) {
   var target = row.target || "";
   var head = "🎯 **Target:** " + target + (row.target_player ? " — " + row.target_player : "") +
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
-  // TOUS les joueurs du plan sont attendus, y compris ceux dont le pseudo n'a
-  // pas été retrouvé sur le serveur : ils s'identifieront à leur 1ᵉʳ clic.
-  var entries = (resolved || []).map(function (r) {
-    return r.id ? { id: r.id } : { name: r.name };
-  }).filter(function (e) { return e.id || e.name; });
+  var entries = readyEntriesOf(resolved);
   var foot = entries.length
     ? "🚀 The strike on **" + target + "** is imminent — hit ✅ **I'm ready** below.\n\n" +
       readyBlock([], entries)
@@ -1938,7 +2015,10 @@ function buildChannelIntro(row, variant, resolved, tag) {
 // Crée (ou réutilise) le salon privé "nuke-<cible>" et y poste la compo
 // CHOISIE : récap + tableau + un message de formation par joueur. Pas de grille
 // de disponibilités — c'est le rôle de /plan, pas celui-ci.
-function doCreateChannel(res, body, row, variant, mode, tag) {
+// `checkId` = custom_id du bouton ✅ Ready check posé sur le message d'accueil :
+// il republie un appel "prêt ?" seul, autant de fois qu'on veut, sans renvoyer
+// le tableau ni les formations.
+function doCreateChannel(res, body, row, variant, mode, tag, checkId) {
   var appId = body.application_id, token = body.token, guildId = body.guild_id;
   deferFor(res, body);
 
@@ -1965,6 +2045,9 @@ function doCreateChannel(res, body, row, variant, mode, tag) {
       {
         content: buildChannelIntro(row, variant, resolved, tag),
         allowed_mentions: { parse: [], users: ids.slice(0, 100) },
+        components: checkId
+          ? [rowOf(button(checkId, "Ready check", { style: 3, emoji: "✅" }))]
+          : null,
       },
       {
         content: variantTableMessage(row, variant, mode, { tag: tag }),
