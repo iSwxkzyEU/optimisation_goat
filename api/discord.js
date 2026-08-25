@@ -944,7 +944,7 @@ function handleComponent(res, body) {
       var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
       return doCreateChannel(res, body, nuke, v, mode, variantTag(v, idx, variants.length),
-        "rchk:" + mode + ":" + nuke.id + ":" + idx);
+        "rchk:" + mode + ":" + nuke.id + ":" + idx, { nukeId: nuke.id, index: idx });
     }).catch(function () { dbError(res); });
   }
 
@@ -1087,8 +1087,15 @@ function handleComponent(res, body) {
   if (kind === "drchan") {
     return fetchDraft(parts[1]).then(function (draft) {
       if (!draft) { draftGone(res); return; }
-      return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
-        draft.mode, draft.label || "", "rchkd:" + draft.id);
+      // Le 🏆 Success classe la nuke ENREGISTRÉE : on retrouve son plan via le
+      // libellé du brouillon (l'index n'est pas stocké).
+      return fetchNukeById(draft.nuke_id).then(function (nuke) {
+        var origin = nuke
+          ? { nukeId: nuke.id, index: variantIndexByTag(variantsOf(nuke), draft.label) }
+          : null;
+        return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
+          draft.mode, draft.label || "", "rchkd:" + draft.id, origin);
+      });
     }).catch(function () { draftDbError(res); });
   }
 
@@ -1462,16 +1469,42 @@ function mentionList(ids) {
 // Un joueur non retrouvé participe quand même : à son 1ᵉʳ clic on le rapproche
 // de son nom (comparaison souple), ou il choisit qui il est dans un menu.
 function normName(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
-function entryKey(e) { return e.id ? "i:" + e.id : "n:" + normName(e.name); }
-function entryToken(e) { return e.id ? "<@" + e.id + ">" : "`@" + e.name + "`"; }
+
+// L'identité d'une entrée est son PSEUDO EN JEU quand on le connaît : c'est lui
+// qui tire, pas le compte Discord. Un même compte Discord peut donc couvrir
+// plusieurs entrées (Parsec) sans qu'elles se confondent.
+function entryKey(e) { return e.name ? "n:" + normName(e.name) : "i:" + e.id; }
+
+// La forme "mention + pseudo" est COLLÉE (aucune espace) : c'est ce qui la
+// distingue d'une mention suivie d'une AUTRE entrée, les entrées étant, elles,
+// séparées par une espace.
+function entryToken(e) {
+  if (e.id && e.name) return "<@" + e.id + ">`@" + e.name + "`";
+  return e.id ? "<@" + e.id + ">" : "`@" + e.name + "`";
+}
 function entryList(entries) { return entries.map(entryToken).join(" "); }
 
+// L'ordre compte : la forme "mention + pseudo" doit être reconnue avant les
+// formes simples, sinon on ne lirait que la mention.
 function parseEntries(line) {
-  var out = [], re = /<@!?(\d+)>|`@([^`]+)`/g, m;
+  var out = [], re = /<@!?(\d+)>`@([^`]+)`|<@!?(\d+)>|`@([^`]+)`/g, m;
   while ((m = re.exec(String(line || "")))) {
-    out.push(m[1] ? { id: m[1] } : { name: m[2] });
+    if (m[1]) out.push({ id: m[1], name: m[2] });
+    else if (m[3]) out.push({ id: m[3] });
+    else out.push({ name: m[4] });
   }
   return out;
+}
+
+// Entrées couvertes par le joueur qui vient de cliquer (plusieurs si Parsec).
+function entriesOfUser(all, userId) {
+  return (all || []).filter(function (e) { return e.id && e.id === userId; });
+}
+
+// Joueurs que personne ne couvre encore : ceux qu'on peut proposer de prendre.
+function freeNames(entries) {
+  return (entries || []).filter(function (e) { return !e.id && e.name; })
+    .map(function (e) { return e.name; });
 }
 
 // Les 1 ou 2 lignes qui portent l'état "prêt / en attente".
@@ -1499,11 +1532,12 @@ function parseReady(content) {
   return { ready: ready, waiting: waiting };
 }
 
-// Remplace l'entrée `fromKey` par la mention du joueur qui vient de s'identifier.
+// Le joueur `userId` prend en charge l'entrée `fromKey`. On GARDE le pseudo en
+// jeu : c'est lui l'identité de l'entrée, et c'est ce qui permet à un même
+// compte Discord d'en couvrir plusieurs (Parsec).
 function claimInto(all, readySet, fromKey, userId) {
-  if (readySet[fromKey]) { delete readySet[fromKey]; readySet["i:" + userId] = true; }
   return all.map(function (e) {
-    return entryKey(e) === fromKey ? { id: userId } : e;
+    return entryKey(e) === fromKey ? { id: userId, name: e.name } : e;
   });
 }
 
@@ -1542,25 +1576,33 @@ function applyReadyClick(content, userId, userName, wantReady) {
   var readySet = {};
   before.ready.forEach(function (e) { readySet[entryKey(e)] = true; });
 
-  var meKey = "i:" + userId;
-  var known = all.some(function (e) { return entryKey(e) === meKey; });
+  var mine = entriesOfUser(all, userId);
 
-  if (!known) {
+  if (!mine.length) {
     // Rapprochement souple : "Master_snidel" (Discord) ~ "Mastersnidel" (jeu).
     var guess = all.find(function (e) {
       return !e.id && normName(e.name) === normName(userName);
     });
     if (!guess) {
-      var names = before.waiting.filter(function (e) { return !e.id; })
-        .map(function (e) { return e.name; });
+      var names = freeNames(before.waiting);
       return names.length ? { status: "claim", names: names } : { status: "absent" };
     }
     all = claimInto(all, readySet, entryKey(guess), userId);
-  } else if (!!readySet[meKey] === wantReady) {
+    mine = entriesOfUser(all, userId);
+  } else if (mine.every(function (e) { return !!readySet[entryKey(e)] === wantReady; })) {
+    // Déjà dans cet état pour tous ses comptes. S'il veut se déclarer prêt et
+    // qu'il reste des joueurs que personne ne couvre, c'est sans doute qu'il
+    // tire aussi pour eux (Parsec) : on lui propose de les prendre.
+    var free = freeNames(before.waiting);
+    if (wantReady && free.length) return { status: "claim", names: free };
     return { status: "same" };
   }
 
-  if (wantReady) readySet[meKey] = true; else delete readySet[meKey];
+  // Un clic vaut pour TOUS les comptes que ce joueur couvre.
+  mine.forEach(function (e) {
+    var k = entryKey(e);
+    if (wantReady) readySet[k] = true; else delete readySet[k];
+  });
   return readyResult(content, before, all, readySet);
 }
 
@@ -1578,7 +1620,7 @@ function applyReadyClaim(content, userId, name) {
   if (!target) return { status: "gone" };
 
   all = claimInto(all, readySet, entryKey(target), userId);
-  readySet["i:" + userId] = true;
+  readySet[entryKey(target)] = true; // l'entrée garde son pseudo : même clé
   return readyResult(content, before, all, readySet);
 }
 
@@ -1605,8 +1647,8 @@ function readyComponents() {
 // on doit donc éditer le message de tir par l'API (d'où ses identifiants ici).
 function claimMenuData(channelId, messageId, names) {
   return {
-    content: "Your Discord name doesn't match any player in this nuke — " +
-      "**which player are you?**",
+    content: "**Which player are you firing for?**\nPick the one you're shooting " +
+      "with — do it again for each account you cover (Parsec).",
     flags: EPHEMERAL,
     components: [row(selectMenu("rdyc:" + channelId + ":" + messageId,
       "Pick your player", names.slice(0, 25).map(function (n) {
@@ -1737,8 +1779,15 @@ function announceAllReady(channelId, appId, token, content, ready) {
 // Roster de départ : TOUS les joueurs du plan sont attendus, y compris ceux
 // dont le pseudo n'a pas été retrouvé (ils s'identifieront à leur 1ᵉʳ clic).
 function readyEntriesOf(resolved) {
+  var seen = {};
+  (resolved || []).forEach(function (r) {
+    if (r.id) seen[r.id] = (seen[r.id] || 0) + 1;
+  });
   return (resolved || []).map(function (r) {
-    return r.id ? { id: r.id } : { name: r.name };
+    if (!r.id) return { name: r.name };
+    // Un même compte Discord qui couvre PLUSIEURS joueurs (Parsec) : on garde
+    // le pseudo en jeu à côté de sa mention pour distinguer ses comptes.
+    return seen[r.id] > 1 ? { id: r.id, name: r.name } : { id: r.id };
   }).filter(function (e) { return e.id || e.name; });
 }
 
@@ -1925,8 +1974,18 @@ function interactionChannelId(body) {
 
 // ACK adapté à l'origine : clic sur un composant → DEFERRED_UPDATE (le panneau
 // reste affiché tel quel) ; slash-command → DEFERRED éphémère.
+// ATTENTION : après un DEFERRED_UPDATE, editOriginal() édite LE MESSAGE DU
+// BOUTON. C'est ce qu'on veut pour un panneau éphémère (il devient l'accusé de
+// réception), mais surtout PAS pour un message public — on effacerait l'accueil
+// d'un salon et ses boutons, qui ne seraient donc utilisables qu'une fois.
+// Depuis un message public, on ouvre donc un message éphémère à part.
+function fromEphemeralMessage(body) {
+  var flags = (body.message && body.message.flags) || 0;
+  return (flags & EPHEMERAL) === EPHEMERAL;
+}
+
 function deferFor(res, body) {
-  if (body.type === INTERACTION.COMPONENT) {
+  if (body.type === INTERACTION.COMPONENT && fromEphemeralMessage(body)) {
     res.status(200).json({ type: REPLY.DEFERRED_UPDATE }); // pas de data : on garde le message
     return;
   }
@@ -2018,7 +2077,17 @@ function buildChannelIntro(row, variant, resolved, tag) {
 // `checkId` = custom_id du bouton ✅ Ready check posé sur le message d'accueil :
 // il republie un appel "prêt ?" seul, autant de fois qu'on veut, sans renvoyer
 // le tableau ni les formations.
-function doCreateChannel(res, body, row, variant, mode, tag, checkId) {
+function channelComponents(checkId, origin) {
+  var btns = [];
+  if (checkId) btns.push(button(checkId, "Ready check", { style: 3, emoji: "✅" }));
+  if (origin && origin.nukeId) {
+    btns.push(button("ok:" + origin.nukeId + ":" + (origin.index || 0),
+      "Success — remove from site", { style: 4, emoji: "🏆" }));
+  }
+  return btns.length ? [rowOf.apply(null, btns)] : null;
+}
+
+function doCreateChannel(res, body, row, variant, mode, tag, checkId, origin) {
   var appId = body.application_id, token = body.token, guildId = body.guild_id;
   deferFor(res, body);
 
@@ -2045,9 +2114,7 @@ function doCreateChannel(res, body, row, variant, mode, tag, checkId) {
       {
         content: buildChannelIntro(row, variant, resolved, tag),
         allowed_mentions: { parse: [], users: ids.slice(0, 100) },
-        components: checkId
-          ? [rowOf(button(checkId, "Ready check", { style: 3, emoji: "✅" }))]
-          : null,
+        components: channelComponents(checkId, origin),
       },
       {
         content: variantTableMessage(row, variant, mode, { tag: tag }),
