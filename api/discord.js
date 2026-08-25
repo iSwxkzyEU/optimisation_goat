@@ -82,6 +82,16 @@ var FORM_TYPES = ["50", "90", "110", "Barrack"];
 // à ~5 messages / 5 s, donc on espace d'un peu plus d'une seconde.
 var POST_GAP_MS = 1100;
 var MAX_PLAYER_PINGS = 30; // garde-fou (durée de la lambda)
+var MAX_ATTACH_BYTES = 8 * 1024 * 1024; // au-delà, on remet le lien en clair
+
+// --- Appel "je suis prêt" sur le message de tir --------------------------
+// Le message PORTE son propre état : la liste des prêts et celle des joueurs
+// attendus sont écrites dedans, sous forme de mentions. Un clic relit ces deux
+// lignes, y déplace le joueur et ré-affiche le message. Aucune table à gérer,
+// et ça marche encore des jours plus tard (pas d'expiration).
+var READY_TAG = "✅ **Ready";
+var WAIT_TAG = "⏳ **Waiting";
+var ALL_READY = "🔥 **Everyone is ready — GO!**";
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
 function readRawBody(req) {
@@ -981,6 +991,47 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
+  // ✅ I'm ready / ↩️ Not ready sur le message de tir. L'état vit DANS le
+  // message : on le relit, on y déplace le joueur, on ré-affiche. Quand le
+  // dernier bascule, le bot annonce le "tout le monde est prêt" à part.
+  if (kind === "rdy" || kind === "nrdy") {
+    var who = interactionUser(body);
+    var msg = (body.message && body.message.content) || "";
+    var state = parseReady(msg);
+    var roster = state.ready.concat(state.waiting);
+    if (roster.indexOf(who.id) < 0) {
+      reply(res, "You're not in this nuke — nothing to confirm here.", true);
+      return Promise.resolve();
+    }
+    var nowReady = kind === "rdy";
+    var readySet = {}, waitSet = {};
+    state.ready.forEach(function (id) { readySet[id] = true; });
+    state.waiting.forEach(function (id) { waitSet[id] = true; });
+    delete readySet[who.id]; delete waitSet[who.id];
+    if (nowReady) readySet[who.id] = true; else waitSet[who.id] = true;
+    // On garde l'ordre d'origine du roster dans les deux listes.
+    var ready = roster.filter(function (id) { return readySet[id]; });
+    var waiting = roster.filter(function (id) { return waitSet[id]; });
+
+    respond(res, REPLY.UPDATE, {
+      content: replaceReadyBlock(msg, readyBlock(ready, waiting)),
+      components: readyComponents(),
+      allowed_mentions: { parse: [] }, // ré-affichage : on NE re-pingue personne
+    });
+
+    // Bascule vers "tous prêts" -> annonce publique (une seule fois).
+    if (!(state.waiting.length && !waiting.length)) return Promise.resolve();
+    var tgt = targetOfPing(msg);
+    var announce = postPublic(body.channel_id || (body.channel && body.channel.id),
+      body.application_id, body.token, {
+        content: "🔥 **Everyone is ready" + (tgt ? " on " + tgt : "") + " — GO!**\n" +
+          mentionList(ready),
+        allowed_mentions: { parse: [], users: ready.slice(0, 100) },
+      });
+    vercelWaitUntil(announce);
+    return announce;
+  }
+
   // [PLAN] Vote de disponibilité : on enregistre (remplace) la sélection du
   // joueur, puis on re-render le message (UPDATE) avec les compteurs à jour.
   if (kind === "pa") {
@@ -1084,13 +1135,77 @@ function variantTableMessage(row, variant, mode, opts) {
   return fitDiscord(header, plain, renderTable(result.rows, { noColor: noColor }));
 }
 
-// Récap de tir (SANS tableau) : cible, side, mentions. tag = nom du plan.
+// Ids d'un texte : "<@123>" / "<@!123>" -> ["123"].
+function mentionIds(line) {
+  var out = [], re = /<@!?(\d+)>/g, m;
+  while ((m = re.exec(String(line || "")))) out.push(m[1]);
+  return out;
+}
+
+function mentionList(ids) {
+  return ids.map(function (id) { return "<@" + id + ">"; }).join(" ");
+}
+
+// Les 1 ou 2 lignes qui portent l'état "prêt / en attente".
+function readyBlock(readyIds, waitingIds) {
+  var total = readyIds.length + waitingIds.length;
+  var lines = [READY_TAG + " (" + readyIds.length + "/" + total + "):** " +
+    (readyIds.length ? mentionList(readyIds) : "—")];
+  if (waitingIds.length) lines.push(WAIT_TAG + ":** " + mentionList(waitingIds));
+  else if (total) lines.push(ALL_READY);
+  return lines.join("\n");
+}
+
+function isReadyLine(line) {
+  return line.indexOf(READY_TAG) === 0 || line.indexOf(WAIT_TAG) === 0 || line === ALL_READY;
+}
+
+// Relit l'état écrit dans le message.
+function parseReady(content) {
+  var ready = [], waiting = [];
+  String(content || "").split("\n").forEach(function (l) {
+    if (l.indexOf(READY_TAG) === 0) ready = mentionIds(l);
+    else if (l.indexOf(WAIT_TAG) === 0) waiting = mentionIds(l);
+  });
+  return { ready: ready, waiting: waiting };
+}
+
+// Remplace le bloc SUR PLACE (le tableau peut le suivre dans le même message).
+function replaceReadyBlock(content, block) {
+  var out = [], done = false;
+  String(content || "").split("\n").forEach(function (l) {
+    if (!isReadyLine(l)) { out.push(l); return; }
+    if (!done) { out.push(block); done = true; }
+  });
+  return out.join("\n");
+}
+
+function readyComponents() {
+  return [row(
+    button("rdy", "I'm ready", { style: 3, emoji: "✅" }),
+    button("nrdy", "Not ready", { style: 2, emoji: "↩️" })
+  )];
+}
+
+// Cible relue depuis l'en-tête du message de tir (pour l'annonce finale).
+function targetOfPing(content) {
+  var m = /^🎯 \*\*Target:\*\* (.+)$/m.exec(String(content || ""));
+  return m ? m[1].trim() : "";
+}
+
+// Récap de tir (SANS tableau) : cible, side, mentions, appel "prêt". tag = plan.
 // `resolved` = sortie de resolveMentions() : [{ name, text:"<@id>"|"@nom", id }].
 function buildLaunchPing(row, variant, resolved, tag) {
   var target = row.target || "";
   var head = "🎯 **Target:** " + target + (row.target_player ? " — " + row.target_player : "") +
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
-  var foot = "🚀 The strike on **" + target + "** is imminent — please react with **+** if you are ready.";
+  // Seuls les joueurs retrouvés sur Discord peuvent cliquer : eux seuls sont
+  // attendus. Sans aucun d'eux, pas de bloc "prêt" (personne ne pourrait valider).
+  var ids = (resolved || []).map(function (r) { return r.id; }).filter(function (id) { return id; });
+  var foot = ids.length
+    ? "🚀 The strike on **" + target + "** is imminent — hit ✅ **I'm ready** below.\n\n" +
+      readyBlock([], ids)
+    : "🚀 The strike on **" + target + "** is imminent — get ready.";
   var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
   var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
   if (body.length <= 2000) return body;
@@ -1166,24 +1281,49 @@ function delay(ms) {
 
 // Poste dans le salon en encaissant le rate limit : sur 429, on attend le
 // retry_after annoncé par Discord et on réessaie une fois.
-function postChannelMessageRL(channelId, data) {
-  return postChannelMessage(channelId, data).catch(function (e) {
+function postChannelMessageRL(channelId, data, file) {
+  return postChannelMessage(channelId, data, file).catch(function (e) {
     var msg = String((e && e.message) || "");
     if (msg.indexOf("Discord 429") !== 0) throw e;
     var wait = 1000;
     try { wait = Math.ceil((JSON.parse(msg.slice(12)).retry_after || 1) * 1000); } catch (e2) { /* défaut */ }
     return delay(Math.min(wait + 100, 5000)).then(function () {
-      return postChannelMessage(channelId, data);
+      return postChannelMessage(channelId, data, file);
     });
   });
 }
 
+// Nom de la pièce jointe : le nom donné à la formation sur le site + l'extension
+// du fichier stocké ("50 - Corner" + ".cas"). On retire ce qui est interdit dans
+// un nom de fichier.
+function attachmentName(label, url) {
+  var m = /\.([A-Za-z0-9]{1,8})(?:$|\?)/.exec(String(url || ""));
+  var ext = m ? "." + m[1] : "";
+  var base = String(label || "formation").replace(/[\\/:*?"<>|\r\n]+/g, "-").trim();
+  if (!base) base = "formation";
+  if (ext && base.slice(-ext.length).toLowerCase() === ext.toLowerCase()) ext = "";
+  return (base.slice(0, 72) + ext).slice(0, 80);
+}
+
+// Télécharge le fichier à joindre. null si indisponible ou trop gros (on
+// retombera alors sur le lien en clair : mieux qu'un message sans formation).
+function downloadAttachment(attach) {
+  if (!attach || !attach.url) return Promise.resolve(null);
+  return fetch(attach.url).then(function (r) {
+    if (!r.ok) return null;
+    return r.arrayBuffer().then(function (ab) {
+      if (!ab.byteLength || ab.byteLength > MAX_ATTACH_BYTES) return null;
+      return { name: attach.name, buf: Buffer.from(ab) };
+    });
+  }).catch(function () { return null; });
+}
+
 // true = posté en PUBLIC dans le salon ; false = repli éphémère (followup).
-function postPublic(channelId, appId, token, data) {
+function postPublic(channelId, appId, token, data, file) {
   if (!channelId) {
     return followupData(appId, token, data).then(function () { return false; });
   }
-  return postChannelMessageRL(channelId, data)
+  return postChannelMessageRL(channelId, data, file)
     .then(function () { return true; })
     .catch(function () {
       return followupData(appId, token, data).then(function () { return false; });
@@ -1193,12 +1333,21 @@ function postPublic(channelId, appId, token, data) {
 // Poste une SUITE de messages dans l'ordre, espacés de POST_GAP_MS (limite
 // Discord ~5 messages / 5 s par salon). Renvoie false si l'un d'eux a dû
 // retomber en éphémère.
+// Un message peut porter `attach` ({ url, name }) : on télécharge le fichier et
+// on le JOINT. Si le téléchargement échoue, on remet le lien en clair dans le
+// texte plutôt que d'envoyer un message sans formation.
 function postSequence(channelId, appId, token, messages) {
   var allPublic = true;
   return (messages || []).reduce(function (chain, m, i) {
     return chain
       .then(function () { return i ? delay(POST_GAP_MS) : null; })
-      .then(function () { return postPublic(channelId, appId, token, m); })
+      .then(function () { return downloadAttachment(m.attach); })
+      .then(function (file) {
+        var data = { content: m.content, allowed_mentions: m.allowed_mentions };
+        if (m.components) data.components = m.components;
+        if (m.attach && !file) data.content += "\n" + m.attach.url;
+        return postPublic(channelId, appId, token, data, file);
+      })
       .then(function (ok) { if (!ok) allPublic = false; });
   }, Promise.resolve()).then(function () { return allPublic; });
 }
@@ -1254,13 +1403,15 @@ function formationMessages(variant, mode, resolved, files) {
     var type = formTypeOf(a.formation, files);
     var file = pickFormationFile(files, a.side, a.formation);
     var lines = [mention];
+    var attach = null;
     if (!type) {
       lines.push("⚠️ **No formation set** — assign one with ⚙️ Setup before the next launch.");
     } else if (file) {
-      // On reprend le NOM du fichier tel qu'il a été nommé sur le site.
+      // On reprend le NOM du fichier tel qu'il a été nommé sur le site, et on
+      // JOINT le fichier : pas de lien de stockage à rallonge dans le message.
       lines.push("**" + (file.name || type) + "**  ·  " + type +
         (a.side ? "  ·  " + a.side : ""));
-      lines.push(file.url);
+      attach = { url: file.url, name: attachmentName(file.name || type, file.url) };
     } else {
       lines.push("**" + type + "**" + (a.side ? "  ·  " + a.side : ""));
       lines.push("⚠️ No file uploaded for **" + (a.side || "?") + " / " + type +
@@ -1269,6 +1420,7 @@ function formationMessages(variant, mode, resolved, files) {
     return {
       content: lines.join("\n"),
       allowed_mentions: who && who.id ? { parse: [], users: [who.id] } : { parse: [] },
+      attach: attach,
     };
   });
 }
@@ -1291,10 +1443,12 @@ function doLaunch(res, body, row, variant, mode, tag) {
     var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
     var allowed = { parse: [], users: ids.slice(0, 100) };
     var combined = ping + "\n" + table;
+    // Boutons "prêt" sur le message de tir (seulement s'il y a un roster).
+    var ready = ping.indexOf(READY_TAG) >= 0 ? readyComponents() : null;
     // Un seul message si ça tient en 2000 car., sinon récap puis tableau.
     var msgs = combined.length <= 2000
-      ? [{ content: combined, allowed_mentions: allowed }]
-      : [{ content: ping, allowed_mentions: allowed },
+      ? [{ content: combined, allowed_mentions: allowed, components: ready }]
+      : [{ content: ping, allowed_mentions: allowed, components: ready },
          { content: table, allowed_mentions: { parse: [] } }];
     msgs = msgs.concat(formationMessages(variant, mode, resolved, files));
     return postSequence(channelId, appId, token, msgs).then(function (isPublic) {
@@ -1569,9 +1723,31 @@ function ensureNukeChannel(guildId, botId, target, memberIds) {
   });
 }
 
-// Poste un message (content/components/allowed_mentions) dans un salon via bot token.
-function postChannelMessage(channelId, data) {
-  return discordBot("POST", "/channels/" + channelId + "/messages", data);
+// Poste un message (content/components/allowed_mentions) dans un salon via bot
+// token. `file` = { name, buf } pour JOINDRE un fichier (pièce jointe Discord,
+// bien plus lisible qu'un lien de stockage brut) ; null = message texte simple.
+// Avec un fichier on passe en multipart : Node ≥ 18 fournit FormData/Blob, et
+// il ne faut SURTOUT pas poser Content-Type à la main (fetch écrit la frontière).
+function postChannelMessage(channelId, data, file) {
+  if (!file) return discordBot("POST", "/channels/" + channelId + "/messages", data);
+  var token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) return Promise.reject(new Error("DISCORD_BOT_TOKEN manquant"));
+  var form = new FormData();
+  form.append("payload_json", JSON.stringify(data));
+  form.append("files[0]", new Blob([file.buf]), file.name);
+  return fetch("https://discord.com/api/v10/channels/" + channelId + "/messages", {
+    method: "POST",
+    headers: {
+      Authorization: "Bot " + token,
+      "User-Agent": "DiscordBot (https://optimisation-goat.vercel.app, 1.0)",
+    },
+    body: form,
+  }).then(function (r) {
+    if (!r.ok) {
+      return r.text().then(function (t) { throw new Error("Discord " + r.status + " " + t); });
+    }
+    return r.json().catch(function () { return null; });
+  });
 }
 
 // Validation d'un modal /plan. On a ≤3 s pour répondre à Discord, or créer le
