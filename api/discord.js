@@ -206,17 +206,40 @@ function formTypeOf(formation, files) {
   return m ? m[1] : null;
 }
 
-// Fichier correspondant à (side, formation). null si rien d'uploadé pour ce couple.
+// Fichier de formation d'un joueur. On regarde d'abord le NOM EXACT du fichier
+// ("50 - Centre") : c'est ce qui permet d'avoir plusieurs 50 sur un même côté
+// et de donner le bon à chacun. Sinon on retombe sur le 1ᵉʳ fichier du type
+// deviné ("50"). null si rien ne colle. Miroir de formationFileFor() du site.
 function pickFormationFile(files, side, formation) {
+  var want = String(formation || "").trim().toLowerCase();
+  if (!want) return null;
+  var s = String(side || "").toUpperCase();
+  function onSide(f) { return f && f.url && String(f.side || "").toUpperCase() === s; }
+
+  var named = (files || []).find(function (f) {
+    return onSide(f) && String(f.name || "").trim().toLowerCase() === want;
+  });
+  if (named) return named;
+
   var type = formTypeOf(formation, files);
   if (!type) return null;
-  var s = String(side || "").toUpperCase();
   var t = type.toLowerCase();
   var hit = (files || []).find(function (f) {
-    return f && f.url && String(f.side || "").toUpperCase() === s &&
-      String(f.type || "").toLowerCase() === t;
+    return onSide(f) && String(f.type || "").toLowerCase() === t;
   });
   return hit || null;
+}
+
+// Étiquette COURTE pour la colonne "Form" du tableau ASCII : un nom de fichier
+// ("50 - Centre") ferait exploser la largeur de la colonne, on n'y met donc que
+// le type. Les noms courts (types maison comme "Siege") passent tels quels.
+function shortFormation(formation) {
+  var s = String(formation == null ? "" : formation).trim();
+  if (s.length <= 8) return s;
+  var lc = s.toLowerCase();
+  if (/barrack/.test(lc)) return "Barrack";
+  var m = lc.match(/(110|90|50)/);
+  return m ? m[1] : s.slice(0, 8);
 }
 
 // --- Brouillons de tir (bouton "Setup" du bot) --------------------------
@@ -634,17 +657,32 @@ function draftPanelData(draft) {
 
 // Deuxième écran de l'éditeur : la formation d'UN joueur. "Auto" rend la main
 // à l'optimiseur (90 pour la 1ʳᵉ armée, 110 pour les autres, 50 pour le cap).
-// `types` = liste des formations proposées (celles du site incluses).
-function draftFormPanelData(draft, index, types) {
+// `files` = fichiers du site. On propose d'abord les fichiers NOMMÉS du côté
+// du joueur ("50 - Centre", "50 - Corner") — c'est ce qui permet de donner un
+// fichier précis à chacun — puis les types génériques (50, 90, …).
+function draftFormPanelData(draft, index, files) {
   var p = (draft.participants || [])[index] || {};
+  var side = String(p.side || draft.side || "").toUpperCase();
+  var cur = String(p.formation || "");
   var options = [selected({
     label: "Auto (computed)", value: "auto",
     description: "Let the optimizer pick the formation",
   }, !p.formLock)];
-  (types && types.length ? types : FORM_TYPES).slice(0, 24).forEach(function (t) {
-    options.push(selected({ label: String(t).slice(0, 100), value: String(t).slice(0, 100) },
-      !!p.formLock && String(p.formation) === String(t)));
+  var seen = {};
+  function add(label, description) {
+    var v = String(label).slice(0, 100);
+    if (!v || seen[v.toLowerCase()] || options.length >= 25) return;
+    seen[v.toLowerCase()] = true;
+    var o = { label: v, value: v };
+    if (description) o.description = String(description).slice(0, 100);
+    options.push(selected(o, !!p.formLock && cur === v));
+  }
+  (files || []).forEach(function (f) {
+    if (f && f.name && String(f.side || "").toUpperCase() === side) {
+      add(f.name, side + " · " + (f.type || "?"));
+    }
   });
+  formTypesOf(files).forEach(function (t) { add(t, "Any " + t + " file for the side"); });
   return {
     content: "⚙️ **Formation for " + (p.name || p.id || "this player") + "** — pick one:",
     components: [
@@ -796,7 +834,7 @@ function handleComponent(res, body) {
         var draft = arr[0];
         if (!draft) { draftGone(res); return; }
         var i = parseInt(value, 10); if (isNaN(i)) i = 0;
-        respond(res, REPLY.UPDATE, draftFormPanelData(draft, i, formTypesOf(arr[1])));
+        respond(res, REPLY.UPDATE, draftFormPanelData(draft, i, arr[1]));
       }).catch(function () { draftDbError(res); });
   }
 
@@ -985,6 +1023,12 @@ function applyFormationLocks(rows, participants) {
   });
 }
 
+// Idem, puis on raccourcit pour l'AFFICHAGE (la colonne Form du tableau).
+function applyFormationsForTable(rows, participants) {
+  applyFormationLocks(rows, participants);
+  (rows || []).forEach(function (r) { r.formation = shortFormation(r.formation); });
+}
+
 // Formation retenue pour chaque joueur, dans l'ordre d'impact du tableau :
 // [{ id, name, formation, side }]. Sert aux messages "1 joueur = 1 formation".
 function assignmentsOf(variant, mode) {
@@ -1017,6 +1061,7 @@ function variantTableMessage(row, variant, mode, opts) {
 
   if (mode === "raw") {
     var rawRows = optimizer.rawList(participants);
+    applyFormationsForTable(rawRows, participants);
     if (!rawRows.length) return emptyTableMsg(target);
     var rawHeader = "**TARGET " + target + "**" +
       (row.target_player ? " — " + row.target_player : "") +
@@ -1027,7 +1072,7 @@ function variantTableMessage(row, variant, mode, opts) {
   }
 
   var result = optimizer.optimize(participants, opts.maxAdj);
-  applyFormationLocks(result.rows, participants);
+  applyFormationsForTable(result.rows, participants);
   if (!result.rows.length) return emptyTableMsg(target);
   var header = "**TARGET " + target + "**" +
     (row.target_player ? " — " + row.target_player : "") +

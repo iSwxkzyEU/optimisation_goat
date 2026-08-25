@@ -392,6 +392,34 @@
       });
   }
 
+  // Renomme un fichier ("R90.cas" -> "50 - Centre"). Ce nom sert d'étiquette
+  // partout : liste des formations, colonne Formation d'un joueur, et message
+  // du bot. Un joueur dont la formation vaut EXACTEMENT ce nom reçoit ce
+  // fichier-là (cf. formationFileFor dans app.js / pickFormationFile du bot).
+  function renameFormationFile(side, type, fileId, name) {
+    name = String(name || "").trim();
+    if (!name) return Promise.resolve();
+    return sb.from("formations").update({ name: name }).eq("id", fileId)
+      .then(function (res) {
+        if (res.error) throw res.error;
+        ((cache.formations[side] || {})[type] || []).forEach(function (f) {
+          if (f.id === fileId) f.name = name;
+        });
+      });
+  }
+
+  // Tous les fichiers d'un côté, tous types confondus : [{ id, name, url, type }].
+  function formationFilesOfSide(side) {
+    var byType = cache.formations[side] || {};
+    var out = [];
+    Object.keys(byType).forEach(function (t) {
+      (byType[t] || []).forEach(function (f) {
+        out.push({ id: f.id, name: f.name, url: f.url, dataUrl: f.dataUrl, type: t });
+      });
+    });
+    return out;
+  }
+
   function deleteFormationFile(side, type, fileId) {
     return sb.from("formations").delete().eq("id", fileId).then(function (res) {
       if (res.error) throw res.error;
@@ -425,8 +453,10 @@
     removeFormationType: removeFormationType,
     formationTypeHasFiles: formationTypeHasFiles,
     isBuiltinFormType: isBuiltinFormType,
+    formationFilesOfSide: formationFilesOfSide,
     uploadFile: uploadFile,
     addFormationFile: addFormationFile,
+    renameFormationFile: renameFormationFile,
     deleteFormationFile: deleteFormationFile,
   };
 })();

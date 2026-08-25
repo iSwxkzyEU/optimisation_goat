@@ -55,6 +55,22 @@
     return m ? m[1] : null;
   }
 
+  // Fichier de formation d'un joueur, pour un côté donné. On regarde d'abord
+  // le NOM EXACT du fichier ("50 - Centre") : c'est ce qui permet d'avoir
+  // plusieurs 50 sur un même côté et de donner le bon à chacun. Sinon, on
+  // retombe sur le 1ᵉʳ fichier du type deviné ("50"). null si rien ne colle.
+  function formationFileFor(side, formation) {
+    var want = String(formation || "").trim().toLowerCase();
+    if (!want) return null;
+    var named = Store.formationFilesOfSide(side).find(function (f) {
+      return String(f.name || "").trim().toLowerCase() === want;
+    });
+    if (named) return named;
+    var ft = formTypeOf(formation);
+    var files = ft ? Store.getFormations(side, ft) : [];
+    return files.length ? files[0] : null;
+  }
+
   function fileToDataUrl(file) {
     return new Promise(function (resolve, reject) {
       var r = new FileReader();
@@ -421,13 +437,13 @@
     var rows = v.participants.map(function (p, idx) {
       // Côté du joueur : le sien s'il a été personnalisé, sinon celui du plan
       var pSide = p.side || v.side;
-      // Cellule formation : lien direct vers le fichier .cas (côté + type)
+      // Cellule formation : lien direct vers le fichier .cas (nom exact, sinon côté + type)
       var ft = formTypeOf(p.formation);
-      var files = ft ? Store.getFormations(pSide, ft) : [];
+      var file = formationFileFor(pSide, p.formation);
       var formCell;
-      if (files.length) {
-        formCell = '<a class="form-link" href="' + files[0].dataUrl + '" download="' +
-          esc(files[0].name) + '" title="Download ' + esc(files[0].name) + '">' +
+      if (file) {
+        formCell = '<a class="form-link" href="' + file.dataUrl + '" download="' +
+          esc(file.name) + '" title="Download ' + esc(file.name) + '">' +
           ic("download") + " " + esc(p.formation) + "</a>";
       } else {
         formCell = esc(p.formation) +
@@ -632,9 +648,12 @@
       var sel = p && p.type === t ? " selected" : "";
       return '<option value="' + t + '"' + sel + ">" + t + "</option>";
     }).join("");
-    var formOpts = Store.formTypes().map(function (t) {
-      return '<option value="' + t + '">';
-    }).join("");
+    // Suggestions : les types (50, 90, …) ET les fichiers nommés du côté du
+    // plan ("50 - Centre"), pour donner un fichier précis à ce joueur.
+    var formOpts = Store.formTypes()
+      .concat(Store.formationFilesOfSide((p && p.side) || variant.side)
+        .map(function (f) { return f.name; }))
+      .map(function (t) { return '<option value="' + esc(t) + '">'; }).join("");
     // Côté personnel : vide = celui du plan
     var sideOpts = '<option value="">Plan side (' + esc(variant.side || "—") + ")</option>" +
       SIDES.map(function (s) {
@@ -1250,8 +1269,10 @@
           ? files.map(function (f) {
               return '<div class="file-row"><a class="file-chip" href="' + f.dataUrl +
                 '" download="' + esc(f.name) + '">' + ic("paperclip") + " " + esc(f.name) + "</a>" +
-                '<button class="x small" data-del="' + f.id + '" data-side="' + side +
-                '" data-type="' + t + '" title="Delete">✕</button></div>';
+                '<button class="row-edit" data-ren="' + f.id + '" data-side="' + esc(side) +
+                '" data-type="' + esc(t) + '" title="Rename">' + ic("pencil") + "</button>" +
+                '<button class="x small" data-del="' + f.id + '" data-side="' + esc(side) +
+                '" data-type="' + esc(t) + '" title="Delete">✕</button></div>';
             }).join("")
           : '<span class="muted small">No files.</span>';
         // Un type ajouté par nous et encore SANS aucun fichier peut être retiré ;
@@ -1321,6 +1342,19 @@
         }).then(function () {
           renderFormations();
         }).catch(showErr);
+      };
+    });
+    el.view.querySelectorAll("[data-ren]").forEach(function (b) {
+      b.onclick = function () {
+        var files = Store.getFormations(b.dataset.side, b.dataset.type) || [];
+        var cur = (files.find(function (f) { return f.id === b.dataset.ren; }) || {}).name || "";
+        var name = window.prompt(
+          "Name of this formation (e.g. “" + b.dataset.type + " - Centre”):", cur);
+        if (name == null) return;
+        name = name.trim();
+        if (!name || name === cur) return;
+        Store.renameFormationFile(b.dataset.side, b.dataset.type, b.dataset.ren, name)
+          .then(function () { renderFormations(); }).catch(showErr);
       };
     });
     el.view.querySelectorAll("[data-del]").forEach(function (b) {
