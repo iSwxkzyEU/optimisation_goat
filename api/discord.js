@@ -973,8 +973,7 @@ function handleComponent(res, body) {
       }
       return resolveMentions(body.guild_id, participantNames(ctx.variant))
         .then(function (resolved) {
-          var pingIds = resolved.map(function (r) { return r.id; })
-            .filter(function (id) { return id; });
+          var pingIds = resolvedIds(resolved);
           return postPublic(chkChan, chkApp, chkToken, {
             content: buildReadyCheck(ctx.row, ctx.variant, resolved, ctx.tag),
             components: readyComponents(),
@@ -1479,6 +1478,28 @@ function mentionList(ids) {
   return ids.map(function (id) { return "<@" + id + ">"; }).join(" ");
 }
 
+// Dédoublonne en gardant l'ordre. INDISPENSABLE pour allowed_mentions.users :
+// Discord rejette le message (50035 SET_TYPE_ALREADY_CONTAINS_VALUE) si un id
+// y figure deux fois — ce qui arrive dès qu'un joueur pilote plusieurs comptes
+// en jeu (Parsec, multi-comptes liés par /link).
+function uniqueList(list) {
+  var seen = {}, out = [];
+  (list || []).forEach(function (v) {
+    if (v && !seen[v]) { seen[v] = true; out.push(v); }
+  });
+  return out;
+}
+
+// Ids Discord distincts d'une sortie de resolveMentions().
+function resolvedIds(resolved) {
+  return uniqueList((resolved || []).map(function (r) { return r.id; }));
+}
+
+// Ligne de mentions : un joueur pilotant deux comptes n'est cité qu'une fois.
+function mentionsLine(resolved) {
+  return uniqueList((resolved || []).map(function (r) { return r.text; })).join(" ");
+}
+
 // --- Entrées du bloc "prêt" ---------------------------------------------
 // Une ENTRÉE = un joueur du tir. Deux formes :
 //   { id }   -> son pseudo en jeu a été retrouvé sur le serveur : "<@123>"
@@ -1798,10 +1819,7 @@ function announceAllReady(channelId, appId, token, content, ready) {
   var tgt = targetOfPing(content);
   // Le bloc ne porte que des pseudos : on reprend les mentions du message
   // (ligne de ping en haut + éventuels pilotes Parsec) pour notifier tout le monde.
-  var seen = {}, ids = [];
-  mentionIds(content).forEach(function (id) {
-    if (!seen[id]) { seen[id] = true; ids.push(id); }
-  });
+  var ids = uniqueList(mentionIds(content));
   return postPublic(channelId, appId, token, {
     content: "🔥 **All players are ready" + (tgt ? " on " + tgt : "") + "** — " +
       "the shooting time will be confirmed.\n" + entryList(ready),
@@ -1830,7 +1848,7 @@ function buildReadyCheck(row, variant, resolved, tag) {
   var entries = readyEntriesOf(resolved);
   if (!entries.length) return head + "\n\n*No player in this plan yet.*";
   // Les mentions servent au ping ET à l'annonce finale, qui les relit ici.
-  var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
+  var mentions = mentionsLine(resolved);
   var body = head + "\n\n" + mentions +
     "\n\nWho's in? Hit ✅ **I'm ready** below.\n\n" + readyBlock([], entries);
   return body.length <= 2000 ? body : head + "\n\n" + readyBlock([], entries);
@@ -1853,7 +1871,7 @@ function buildLaunchPing(row, variant, resolved, tag) {
     ? "🚀 The strike on **" + target + "** is imminent — hit ✅ **I'm ready** below.\n\n" +
       readyBlock([], entries)
     : "🚀 The strike on **" + target + "** is imminent — get ready.";
-  var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
+  var mentions = mentionsLine(resolved);
   var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
   if (body.length <= 2000) return body;
   // Trop de joueurs pour tenir : on garde l'essentiel sans la liste des mentions.
@@ -2111,7 +2129,7 @@ function buildChannelIntro(row, variant, resolved, tag) {
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
   var foot = "Each player's formation is posted below. " +
     "Hit 🚀 **Launch** from `/id_syncro` or `/id_same_time` when it's time to fire.";
-  var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
+  var mentions = mentionsLine(resolved);
   var body = head + "\n\n💥 **SHOOTERS (" + participants.length + "):**\n" +
     shooterList(participants) + "\n\n" + mentions + "\n\n" + foot;
   if (body.length <= 2000) return body;
@@ -2145,8 +2163,7 @@ function doCreateChannel(res, body, row, variant, mode, tag, checkId, origin) {
     fetchFormationFiles(),
   ]).then(function (arr) {
     var resolved = arr[0] || [], files = arr[1] || [];
-    var ids = resolved.map(function (r) { return r.id; })
-      .filter(function (id) { return id; });
+    var ids = resolvedIds(resolved);
     var unresolved = resolved.filter(function (r) { return !r.id; })
       .map(function (r) { return r.name; });
     var note = unresolved.length
@@ -2212,7 +2229,7 @@ function doLaunch(res, body, row, variant, mode, tag, origin) {
     var resolved = arr[0] || [], files = arr[1] || [];
     var ping = buildLaunchPing(row, variant, resolved, tag);
     var table = variantTableMessage(row, variant, mode, { tag: tag });
-    var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
+    var ids = resolvedIds(resolved);
     var allowed = { parse: [], users: ids.slice(0, 100) };
     var combined = ping + "\n" + table;
     // Boutons du message de tir : "prêt" (s'il y a un roster) et 🏆 Success.
@@ -2541,7 +2558,7 @@ function handlePlanModal(res, body) {
   var work = resolveMentions(guildId, players.map(function (p) { return p.name; }))
     .then(function (resolved) {
       resolved.forEach(function (r, i) { if (r.id && players[i]) players[i].did = r.id; });
-      var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
+      var ids = resolvedIds(resolved);
       var unresolved = resolved.filter(function (r) { return !r.id; })
         .map(function (r) { return r.name; });
       var plan = {
