@@ -91,7 +91,11 @@ var MAX_ATTACH_BYTES = 8 * 1024 * 1024; // au-delà, on remet le lien en clair
 // et ça marche encore des jours plus tard (pas d'expiration).
 var READY_TAG = "✅ **Ready";
 var WAIT_TAG = "⏳ **Waiting";
-var ALL_READY = "🔥 **Everyone is ready — GO!**";
+var ALL_READY = "🔥 **All players are ready** — the shooting time will be confirmed.";
+// Repère de la ligne "tout le monde est prêt" : on la reconnaît à son préfixe,
+// pas à son texte exact, pour qu'un changement de formulation ne casse pas les
+// messages déjà postés (le bloc serait dupliqué au clic suivant).
+var ALL_READY_TAG = "🔥 **";
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
 function readRawBody(req) {
@@ -1306,7 +1310,8 @@ function readyBlock(ready, waiting) {
 }
 
 function isReadyLine(line) {
-  return line.indexOf(READY_TAG) === 0 || line.indexOf(WAIT_TAG) === 0 || line === ALL_READY;
+  return line.indexOf(READY_TAG) === 0 || line.indexOf(WAIT_TAG) === 0 ||
+    line.indexOf(ALL_READY_TAG) === 0;
 }
 
 // Relit l'état écrit dans le message.
@@ -1548,8 +1553,8 @@ function announceAllReady(channelId, appId, token, content, ready) {
   var ids = ready.filter(function (e) { return e.id; })
     .map(function (e) { return e.id; });
   return postPublic(channelId, appId, token, {
-    content: "🔥 **Everyone is ready" + (tgt ? " on " + tgt : "") + " — GO!**\n" +
-      entryList(ready),
+    content: "🔥 **All players are ready" + (tgt ? " on " + tgt : "") + "** — " +
+      "the shooting time will be confirmed.\n" + entryList(ready),
     allowed_mentions: { parse: [], users: ids.slice(0, 100) },
   });
 }
