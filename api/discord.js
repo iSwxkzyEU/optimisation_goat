@@ -1199,6 +1199,18 @@ function handleComponent(res, body) {
   // ✅ I'm ready / ↩️ Not ready sur le message de tir. L'état vit DANS le
   // message : on le relit, on y déplace le joueur, on ré-affiche. Quand le
   // dernier bascule, le bot annonce le "tout le monde est prêt" à part.
+  // ➕ Also firing for… → menu des comptes que personne ne couvre (Parsec).
+  if (kind === "rdy2") {
+    var free = freeNames(parseReady((body.message && body.message.content) || "").waiting);
+    if (!free.length) {
+      reply(res, "Every player in this nuke is already covered — nothing left to take.", true);
+      return Promise.resolve();
+    }
+    respond(res, REPLY.MESSAGE, claimMenuData(interactionChannelId(body),
+      (body.message && body.message.id) || "", free));
+    return Promise.resolve();
+  }
+
   if (kind === "rdy" || kind === "nrdy") {
     var who = interactionUser(body);
     var msg = (body.message && body.message.content) || "";
@@ -1634,9 +1646,12 @@ function replaceReadyBlock(content, block) {
   return out.join("\n");
 }
 
+// "Also firing for…" = le cas Parsec : on prend en charge un compte que
+// personne ne couvre. À répéter autant de fois qu'on pilote de comptes.
 function readyComponents() {
   return [row(
     button("rdy", "I'm ready", { style: 3, emoji: "✅" }),
+    button("rdy2", "Also firing for…", { style: 2, emoji: "➕" }),
     button("nrdy", "Not ready", { style: 2, emoji: "↩️" })
   )];
 }
