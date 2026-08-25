@@ -14,11 +14,14 @@
                                       + « Gérer les rôles » ; sinon repli sur le
                                       salon courant.)
      /id_syncro                     : menu catégorie -> village -> APERÇU privé
-                                      du tableau OPTIMISÉ (synchro), avec trois
+                                      du tableau OPTIMISÉ (synchro), avec quatre
                                       boutons : 📢 Post table (publie le tableau
                                       pour tout le monde), ⚙️ Setup (change le
                                       side / les formations, retire ou ajoute un
-                                      joueur) et 🚀 Launch (publie + ping + un
+                                      joueur), 📁 Create channel (salon PRIVÉ
+                                      "nuke-<cible>" avec la compo, les joueurs
+                                      et leurs formations — sans grille de
+                                      dispos) et 🚀 Launch (publie + ping + un
                                       message de formation par joueur).
      /id_same_time                  : idem mais tableau BRUT (same time).
      /launch_syncro [village]       : récap + PING des joueurs + tableau
@@ -628,6 +631,7 @@ function previewData(nuke, variants, mode, index) {
   comps.push(row(
     button("post:" + suffix, "Post table", { style: 1, emoji: "📢" }),
     button("setup:" + suffix, "Setup", { style: 2, emoji: "⚙️" }),
+    button("chan:" + suffix, "Create channel", { style: 2, emoji: "📁" }),
     button("lnow:" + suffix, "Launch", { style: 3, emoji: "🚀" })
   ));
   // Aucun ping : ceci n'affiche que la cible + le tableau. parse:[] neutralise
@@ -748,6 +752,7 @@ function draftPanelData(draft) {
   comps.push(row(
     button("dra:" + draft.id, "Add player", { emoji: "➕" }),
     button("drz:" + draft.id, "Reset", { emoji: "♻️" }),
+    button("drchan:" + draft.id, "Create channel", { emoji: "📁" }),
     button("drpost:" + draft.id, "Post table", { style: 1, emoji: "📢" }),
     button("drl:" + draft.id, "Launch", { style: 3, emoji: "🚀" })
   ));
@@ -922,6 +927,17 @@ function handleComponent(res, body) {
       }).catch(function () { draftDbError(res); });
   }
 
+  // 📁 Create channel (depuis l'aperçu) → salon privé avec la compo choisie.
+  if (kind === "chan") {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+      var v = variants[idx] || variants[0];
+      return doCreateChannel(res, body, nuke, v, mode, variantTag(v, idx, variants.length));
+    }).catch(function () { dbError(res); });
+  }
+
   // 🚀 Launch (depuis l'aperçu) → tableau public + ping + formations.
   if (kind === "lnow") {
     return fetchNukeById(parts[2]).then(function (nuke) {
@@ -1006,6 +1022,15 @@ function handleComponent(res, body) {
   if (kind === "dra") {
     respond(res, REPLY.MODAL, addPlayerModalData(parts[1]));
     return Promise.resolve();
+  }
+
+  // 📁 Create channel depuis l'éditeur : c'est la compo RÉGLÉE qui part.
+  if (kind === "drchan") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
+        draft.mode, draft.label || "");
+    }).catch(function () { draftDbError(res); });
   }
 
   // ◀ Back to setup depuis l'écran formation.
@@ -1888,6 +1913,89 @@ function formationMessages(variant, mode, resolved, files) {
       attach: attach,
     };
   });
+}
+
+// --- 📁 Create channel --------------------------------------------------
+// En-tête du salon privé : cible, side, plan, la liste des tireurs et leurs
+// mentions. Les formations suivent, un message par joueur.
+function buildChannelIntro(row, variant, resolved, tag) {
+  var target = row.target || "";
+  var participants = (variant && variant.participants) || [];
+  var head = "📁 **Nuke on " + target + "**" +
+    (row.target_player ? " — " + row.target_player : "") +
+    "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
+  var foot = "Each player's formation is posted below. " +
+    "Hit 🚀 **Launch** from `/id_syncro` or `/id_same_time` when it's time to fire.";
+  var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
+  var body = head + "\n\n💥 **SHOOTERS (" + participants.length + "):**\n" +
+    shooterList(participants) + "\n\n" + mentions + "\n\n" + foot;
+  if (body.length <= 2000) return body;
+  // Trop de monde pour tout faire tenir : la compo reste dans le tableau, juste
+  // après, on ne garde donc ici que les mentions.
+  return head + "\n\n" + mentions + "\n\n" + foot;
+}
+
+// Crée (ou réutilise) le salon privé "nuke-<cible>" et y poste la compo
+// CHOISIE : récap + tableau + un message de formation par joueur. Pas de grille
+// de disponibilités — c'est le rôle de /plan, pas celui-ci.
+function doCreateChannel(res, body, row, variant, mode, tag) {
+  var appId = body.application_id, token = body.token, guildId = body.guild_id;
+  deferFor(res, body);
+
+  var work = Promise.all([
+    resolveMentions(guildId, participantNames(variant)),
+    fetchFormationFiles(),
+  ]).then(function (arr) {
+    var resolved = arr[0] || [], files = arr[1] || [];
+    var ids = resolved.map(function (r) { return r.id; })
+      .filter(function (id) { return id; });
+    var unresolved = resolved.filter(function (r) { return !r.id; })
+      .map(function (r) { return r.name; });
+    var note = unresolved.length
+      ? "\n⚠️ Not added to the channel (no Discord match): " + unresolved.join(", ") +
+        " — they should run `/link`."
+      : "";
+
+    if (!guildId) {
+      return editOriginal(appId, token,
+        { content: "❌ This only works inside a server.", components: [] });
+    }
+
+    var msgs = [
+      {
+        content: buildChannelIntro(row, variant, resolved, tag),
+        allowed_mentions: { parse: [], users: ids.slice(0, 100) },
+      },
+      {
+        content: variantTableMessage(row, variant, mode, { tag: tag }),
+        allowed_mentions: { parse: [] },
+      },
+    ].concat(formationMessages(variant, mode, resolved, files));
+
+    return ensureNukeChannel(guildId, appId, row.target, ids)
+      .then(function (channelId) {
+        return postSequence(channelId, appId, token, msgs).then(function () {
+          return editOriginal(appId, token, {
+            content: "✅ <#" + channelId + "> is ready — composition, table and " +
+              "formations are posted there, and only these players can see it." + note,
+            components: [],
+          });
+        });
+      })
+      .catch(function () {
+        return editOriginal(appId, token, {
+          content: "⚠️ Couldn't create the private channel — does the bot have " +
+            "**Manage Channels** and **Manage Roles**?" + note,
+          components: [],
+        });
+      });
+  }).catch(function () {
+    return editOriginal(appId, token,
+      { content: "❌ Something went wrong while creating the channel.", components: [] });
+  });
+
+  vercelWaitUntil(work);
+  return work;
 }
 
 // 🚀 LAUNCH : publie dans le salon le récap qui PING + le tableau (mode choisi),
