@@ -130,6 +130,23 @@ function sbGet(path) {
   });
 }
 
+// DELETE PostgREST (pas de corps : PostgREST n'en attend pas).
+function sbDelete(path) {
+  var url = SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/" + path;
+  return fetch(url, {
+    method: "DELETE",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: "Bearer " + SUPABASE_ANON_KEY,
+    },
+  }).then(function (res) {
+    if (!res.ok) {
+      return res.text().then(function (t) { throw new Error("Supabase " + res.status + " " + t); });
+    }
+    return null;
+  });
+}
+
 // Écriture PostgREST générique (POST/PATCH/…). `extra` = en-têtes additionnels
 // (ex. Prefer: return=representation / resolution=merge-duplicates). Renvoie le
 // JSON décodé, ou null si la réponse est vide (204 / return=minimal).
@@ -824,7 +841,8 @@ function handleComponent(res, body) {
       var variants = variantsOf(nuke);
       var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
-      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length));
+      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length),
+        { nukeId: nuke.id, index: idx });
     }).catch(function () { dbError(res); });
   }
 
@@ -922,8 +940,15 @@ function handleComponent(res, body) {
           allowed_mentions: { parse: [] },
         });
       }
-      return doLaunch(res, body, draftRow(draft), draftVariant(draft), draft.mode,
-        draft.label || "");
+      // Le 🏆 Success classe la nuke ENREGISTRÉE : on retrouve son plan via le
+      // libellé du brouillon (l'index n'est pas stocké).
+      return fetchNukeById(draft.nuke_id).then(function (nuke) {
+        var origin = nuke
+          ? { nukeId: nuke.id, index: variantIndexByTag(variantsOf(nuke), draft.label) }
+          : null;
+        return doLaunch(res, body, draftRow(draft), draftVariant(draft), draft.mode,
+          draft.label || "", origin);
+      });
     }).catch(function () { draftDbError(res); });
   }
 
@@ -976,7 +1001,7 @@ function handleComponent(res, body) {
         respond(res, REPLY.UPDATE, launchVariantMenuData(nuke, variants, mode));
         return;
       }
-      return doLaunch(res, body, nuke, variants[0], mode, "");
+      return doLaunch(res, body, nuke, variants[0], mode, "", { nukeId: nuke.id, index: 0 });
     }).catch(function () { dbError(res); });
   }
 
@@ -987,7 +1012,8 @@ function handleComponent(res, body) {
       var variants = variantsOf(nuke);
       var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
       var v = variants[idx] || variants[0];
-      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length));
+      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length),
+        { nukeId: nuke.id, index: idx });
     }).catch(function () { dbError(res); });
   }
 
@@ -997,39 +1023,130 @@ function handleComponent(res, body) {
   if (kind === "rdy" || kind === "nrdy") {
     var who = interactionUser(body);
     var msg = (body.message && body.message.content) || "";
-    var state = parseReady(msg);
-    var roster = state.ready.concat(state.waiting);
-    if (roster.indexOf(who.id) < 0) {
+    var chan = interactionChannelId(body);
+    var out = applyReadyClick(msg, who.id, who.name, kind === "rdy");
+
+    // Inconnu, mais des joueurs non retrouvés restent à pourvoir : on lui
+    // demande lequel il est (menu éphémère).
+    if (out.status === "claim") {
+      respond(res, REPLY.MESSAGE,
+        claimMenuData(chan, (body.message && body.message.id) || "", out.names));
+      return Promise.resolve();
+    }
+    if (out.status === "absent") {
       reply(res, "You're not in this nuke — nothing to confirm here.", true);
       return Promise.resolve();
     }
-    var nowReady = kind === "rdy";
-    var readySet = {}, waitSet = {};
-    state.ready.forEach(function (id) { readySet[id] = true; });
-    state.waiting.forEach(function (id) { waitSet[id] = true; });
-    delete readySet[who.id]; delete waitSet[who.id];
-    if (nowReady) readySet[who.id] = true; else waitSet[who.id] = true;
-    // On garde l'ordre d'origine du roster dans les deux listes.
-    var ready = roster.filter(function (id) { return readySet[id]; });
-    var waiting = roster.filter(function (id) { return waitSet[id]; });
+    // Déjà dans cet état : on le dit, plutôt que de laisser croire à un bug.
+    if (out.status === "same") {
+      reply(res, kind === "rdy"
+        ? "You're already marked **ready** — hit ↩️ *Not ready* to step back."
+        : "You're already marked **not ready**.", true);
+      return Promise.resolve();
+    }
 
     respond(res, REPLY.UPDATE, {
-      content: replaceReadyBlock(msg, readyBlock(ready, waiting)),
-      components: readyComponents(),
+      content: out.content,
+      // On garde les boutons du message (prêt + éventuel Success).
+      components: (body.message && body.message.components) || readyComponents(),
       allowed_mentions: { parse: [] }, // ré-affichage : on NE re-pingue personne
     });
+    return readyFollowUp(out, chan, body.application_id, body.token, who.name);
+  }
 
-    // Bascule vers "tous prêts" -> annonce publique (une seule fois).
-    if (!(state.waiting.length && !waiting.length)) return Promise.resolve();
-    var tgt = targetOfPing(msg);
-    var announce = postPublic(body.channel_id || (body.channel && body.channel.id),
-      body.application_id, body.token, {
-        content: "🔥 **Everyone is ready" + (tgt ? " on " + tgt : "") + " — GO!**\n" +
-          mentionList(ready),
-        allowed_mentions: { parse: [], users: ready.slice(0, 100) },
+  // Le joueur a désigné qui il est dans le menu : on édite le message de tir
+  // par l'API (le menu, lui, vit dans un message éphémère à part).
+  if (kind === "rdyc") {
+    var cid = parts[1], mid = parts[2];
+    var claimer = interactionUser(body);
+    var appId2 = body.application_id, token2 = body.token;
+    deferFor(res, body);
+    var claimWork = discordBot("GET", "/channels/" + cid + "/messages/" + mid)
+      .then(function (m) {
+        var done = applyReadyClaim((m && m.content) || "", claimer.id, value);
+        if (done.status !== "ok") {
+          return editOriginal(appId2, token2, {
+            content: "⚠️ **" + value + "** was already taken — nothing changed.",
+            components: [],
+          });
+        }
+        return discordBot("PATCH", "/channels/" + cid + "/messages/" + mid, {
+          content: done.content,
+          components: (m && m.components) || readyComponents(),
+          allowed_mentions: { parse: [] },
+        }).then(function () {
+          return editOriginal(appId2, token2, {
+            content: "✅ You're marked **ready** as **" + value + "**.",
+            components: [],
+          });
+        }).then(function () {
+          return readyFollowUp(done, cid, appId2, token2, value);
+        });
+      })
+      .catch(function () {
+        return editOriginal(appId2, token2,
+          { content: "❌ Couldn't update the strike message.", components: [] });
       });
-    vercelWaitUntil(announce);
-    return announce;
+    vercelWaitUntil(claimWork);
+    return claimWork;
+  }
+
+  // 🏆 Success -> confirmation, parce que ça SUPPRIME la nuke du site.
+  if (kind === "ok") {
+    respond(res, REPLY.MESSAGE, {
+      content: "🏆 **Mark this nuke as a success?**\nIt gets saved to the site's " +
+        "**History** and removed from the nuke list — exactly like the Success " +
+        "button on the site.\n*(the number of armies is only asked for on the site)*",
+      flags: EPHEMERAL,
+      components: [row(
+        button("okc:" + parts[1] + ":" + (parts[2] || "0"), "Confirm success",
+          { style: 4, emoji: "🏆" }),
+        button("okx", "Cancel", { style: 2 })
+      )],
+    });
+    return Promise.resolve();
+  }
+
+  if (kind === "okx") {
+    respond(res, REPLY.UPDATE,
+      { content: "Cancelled — nothing was changed.", components: [] });
+    return Promise.resolve();
+  }
+
+  if (kind === "okc") {
+    var nukeId = parts[1];
+    var vIdx = parseInt(parts[2], 10); if (isNaN(vIdx)) vIdx = 0;
+    var okApp = body.application_id, okToken = body.token;
+    var okChan = interactionChannelId(body);
+    var okUser = interactionUser(body);
+    deferFor(res, body);
+    var okWork = fetchNukeById(nukeId).then(function (nuke) {
+      if (!nuke) {
+        return editOriginal(okApp, okToken,
+          { content: "⚠️ This nuke is already off the site — nothing to do.", components: [] });
+      }
+      var v = rawVariantAt(nuke, vIdx);
+      // Historique D'ABORD : si la suppression échoue, on n'a pas perdu la trace.
+      return sbWrite("POST", "nuke_history", historyRowOf(nuke, v, "success"),
+        { Prefer: "return=minimal" })
+        .then(function () { return sbDelete("nukes?id=eq." + encodeURIComponent(nukeId)); })
+        .then(function () {
+          return postPublic(okChan, okApp, okToken, {
+            content: "🏆 **TARGET " + (nuke.target || "?") + " destroyed** — saved to " +
+              "History and removed from the site by **" + okUser.name + "**.",
+            allowed_mentions: { parse: [] },
+          });
+        })
+        .then(function () {
+          return editOriginal(okApp, okToken,
+            { content: "✅ Done — it's in History and off the nuke list.", components: [] });
+        });
+    }).catch(function () {
+      return editOriginal(okApp, okToken,
+        { content: "❌ Couldn't save the success — nothing was deleted.", components: [] });
+    });
+    vercelWaitUntil(okWork);
+    return okWork;
   }
 
   // [PLAN] Vote de disponibilité : on enregistre (remplace) la sélection du
@@ -1146,12 +1263,32 @@ function mentionList(ids) {
   return ids.map(function (id) { return "<@" + id + ">"; }).join(" ");
 }
 
+// --- Entrées du bloc "prêt" ---------------------------------------------
+// Une ENTRÉE = un joueur du tir. Deux formes :
+//   { id }   -> son pseudo en jeu a été retrouvé sur le serveur : "<@123>"
+//   { name } -> il n'a pas été retrouvé : "`@Nom`" (accents graves : pas de
+//               ping possible, mais il est bien ATTENDU comme les autres).
+// Un joueur non retrouvé participe quand même : à son 1ᵉʳ clic on le rapproche
+// de son nom (comparaison souple), ou il choisit qui il est dans un menu.
+function normName(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+function entryKey(e) { return e.id ? "i:" + e.id : "n:" + normName(e.name); }
+function entryToken(e) { return e.id ? "<@" + e.id + ">" : "`@" + e.name + "`"; }
+function entryList(entries) { return entries.map(entryToken).join(" "); }
+
+function parseEntries(line) {
+  var out = [], re = /<@!?(\d+)>|`@([^`]+)`/g, m;
+  while ((m = re.exec(String(line || "")))) {
+    out.push(m[1] ? { id: m[1] } : { name: m[2] });
+  }
+  return out;
+}
+
 // Les 1 ou 2 lignes qui portent l'état "prêt / en attente".
-function readyBlock(readyIds, waitingIds) {
-  var total = readyIds.length + waitingIds.length;
-  var lines = [READY_TAG + " (" + readyIds.length + "/" + total + "):** " +
-    (readyIds.length ? mentionList(readyIds) : "—")];
-  if (waitingIds.length) lines.push(WAIT_TAG + ":** " + mentionList(waitingIds));
+function readyBlock(ready, waiting) {
+  var total = ready.length + waiting.length;
+  var lines = [READY_TAG + " (" + ready.length + "/" + total + "):** " +
+    (ready.length ? entryList(ready) : "—")];
+  if (waiting.length) lines.push(WAIT_TAG + ":** " + entryList(waiting));
   else if (total) lines.push(ALL_READY);
   return lines.join("\n");
 }
@@ -1164,10 +1301,93 @@ function isReadyLine(line) {
 function parseReady(content) {
   var ready = [], waiting = [];
   String(content || "").split("\n").forEach(function (l) {
-    if (l.indexOf(READY_TAG) === 0) ready = mentionIds(l);
-    else if (l.indexOf(WAIT_TAG) === 0) waiting = mentionIds(l);
+    if (l.indexOf(READY_TAG) === 0) ready = parseEntries(l);
+    else if (l.indexOf(WAIT_TAG) === 0) waiting = parseEntries(l);
   });
   return { ready: ready, waiting: waiting };
+}
+
+// Remplace l'entrée `fromKey` par la mention du joueur qui vient de s'identifier.
+function claimInto(all, readySet, fromKey, userId) {
+  if (readySet[fromKey]) { delete readySet[fromKey]; readySet["i:" + userId] = true; }
+  return all.map(function (e) {
+    return entryKey(e) === fromKey ? { id: userId } : e;
+  });
+}
+
+// Reconstruit le bloc à partir de l'ordre d'origine et de l'ensemble des prêts.
+function splitReady(all, readySet) {
+  var ready = [], waiting = [];
+  all.forEach(function (e) { (readySet[entryKey(e)] ? ready : waiting).push(e); });
+  return { ready: ready, waiting: waiting };
+}
+
+function readyResult(content, before, all, readySet) {
+  var next = splitReady(all, readySet);
+  return {
+    status: "ok",
+    content: replaceReadyBlock(content, readyBlock(next.ready, next.waiting)),
+    ready: next.ready,
+    waiting: next.waiting,
+    // Transitions : personne n'attendait plus / on retombe en attente.
+    completed: before.waiting.length > 0 && next.waiting.length === 0,
+    reopened: before.waiting.length === 0 && next.waiting.length > 0,
+  };
+}
+
+// Clic sur ✅ / ↩️. Renvoie :
+//   { status: "ok", content, … }    -> message à ré-afficher
+//   { status: "same" }              -> déjà dans cet état (rien à changer)
+//   { status: "claim", names }      -> inconnu, mais des joueurs non retrouvés
+//                                      restent à pourvoir : on lui demande qui
+//                                      il est
+//   { status: "absent" }            -> il n'a rien à faire ici
+function applyReadyClick(content, userId, userName, wantReady) {
+  var before = parseReady(content);
+  var all = before.ready.concat(before.waiting);
+  if (!all.length) return { status: "absent" };
+
+  var readySet = {};
+  before.ready.forEach(function (e) { readySet[entryKey(e)] = true; });
+
+  var meKey = "i:" + userId;
+  var known = all.some(function (e) { return entryKey(e) === meKey; });
+
+  if (!known) {
+    // Rapprochement souple : "Master_snidel" (Discord) ~ "Mastersnidel" (jeu).
+    var guess = all.find(function (e) {
+      return !e.id && normName(e.name) === normName(userName);
+    });
+    if (!guess) {
+      var names = before.waiting.filter(function (e) { return !e.id; })
+        .map(function (e) { return e.name; });
+      return names.length ? { status: "claim", names: names } : { status: "absent" };
+    }
+    all = claimInto(all, readySet, entryKey(guess), userId);
+  } else if (!!readySet[meKey] === wantReady) {
+    return { status: "same" };
+  }
+
+  if (wantReady) readySet[meKey] = true; else delete readySet[meKey];
+  return readyResult(content, before, all, readySet);
+}
+
+// Le joueur a choisi QUI il est dans le menu : on remplace son nom par sa
+// mention et on le passe prêt. "gone" = quelqu'un l'a pris entre-temps.
+function applyReadyClaim(content, userId, name) {
+  var before = parseReady(content);
+  var all = before.ready.concat(before.waiting);
+  var readySet = {};
+  before.ready.forEach(function (e) { readySet[entryKey(e)] = true; });
+
+  var target = all.find(function (e) {
+    return !e.id && normName(e.name) === normName(name);
+  });
+  if (!target) return { status: "gone" };
+
+  all = claimInto(all, readySet, entryKey(target), userId);
+  readySet["i:" + userId] = true;
+  return readyResult(content, before, all, readySet);
 }
 
 // Remplace le bloc SUR PLACE (le tableau peut le suivre dans le même message).
@@ -1187,6 +1407,106 @@ function readyComponents() {
   )];
 }
 
+// Menu (éphémère) posé quand le cliqueur n'est associé à personne : il désigne
+// le joueur qu'il est parmi ceux dont le pseudo n'a pas été retrouvé.
+// custom_id : "rdyc:<salon>:<message>" — le menu vit dans un message éphémère,
+// on doit donc éditer le message de tir par l'API (d'où ses identifiants ici).
+function claimMenuData(channelId, messageId, names) {
+  return {
+    content: "Your Discord name doesn't match any player in this nuke — " +
+      "**which player are you?**",
+    flags: EPHEMERAL,
+    components: [row(selectMenu("rdyc:" + channelId + ":" + messageId,
+      "Pick your player", names.slice(0, 25).map(function (n) {
+        return { label: String(n).slice(0, 100), value: String(n).slice(0, 100) };
+      })))],
+  };
+}
+
+// --- 🏆 Success : classer la nuke depuis Discord ------------------------
+// Même effet que le bouton Success du site : une trace dans nuke_history, puis
+// la nuke sort de la liste. On garde la variante BRUTE de la ligne (elle porte
+// spread / firstLaunch, que variantsOf() ne conserve pas).
+function rawVariantAt(nuke, index) {
+  if (Array.isArray(nuke.variants) && nuke.variants.length) {
+    return nuke.variants[index] || nuke.variants[0];
+  }
+  return {
+    label: "", side: nuke.side || "", participants: nuke.participants || [],
+    spread: nuke.spread || "", firstLaunch: nuke.first_launch || "",
+  };
+}
+
+// Ligne nuke_history, au même format que celle écrite par le site (js/store.js).
+function historyRowOf(nuke, variant, result) {
+  variant = variant || {};
+  var participants = variant.participants || [];
+  return {
+    target: nuke.target || null,
+    target_player: nuke.target_player || null,
+    side: variant.side || null,
+    result: result,
+    players: participants.length,
+    armies: null,          // le nombre d'armées ne se saisit que sur le site
+    outside_nuke: false,
+    variant_label: variant.label || null,
+    details: {
+      spread: variant.spread || "",
+      firstLaunch: variant.firstLaunch || variant.first_launch || "",
+      targetImage: nuke.target_image || null,
+      participants: participants.map(function (p) {
+        return {
+          id: p.id || "", name: p.name || "", type: p.type || "", qty: p.qty || "",
+          march: p.march || "", offset: p.offset || "", impact: p.impact || "",
+          side: p.side || "", formation: p.formation || "",
+        };
+      }),
+    },
+  };
+}
+
+// Boutons du message de tir : "prêt" et, si on sait de quelle nuke il s'agit,
+// le 🏆 Success qui la classe sans passer par le site.
+function launchComponents(withReady, origin) {
+  var comps = withReady ? readyComponents() : [];
+  if (origin && origin.nukeId) {
+    comps.push(row(button("ok:" + origin.nukeId + ":" + (origin.index || 0),
+      "Success — remove from site", { style: 4, emoji: "🏆" })));
+  }
+  return comps.length ? comps : null;
+}
+
+// Suite d'un clic : on annonce le "tout le monde est prêt", et on signale aussi
+// le cas inverse — quelqu'un se retire APRÈS l'annonce. Sans ça, le salon reste
+// sur un "GO!" qui n'est plus vrai.
+function readyFollowUp(out, channelId, appId, token, whoName) {
+  var task = null;
+  if (out.completed) {
+    task = announceAllReady(channelId, appId, token, out.content, out.ready);
+  } else if (out.reopened) {
+    task = postPublic(channelId, appId, token, {
+      content: "↩️ **" + whoName + " is no longer ready** — " +
+        out.ready.length + "/" + (out.ready.length + out.waiting.length) + " ready.",
+      allowed_mentions: { parse: [] },
+    });
+  }
+  if (!task) return Promise.resolve();
+  vercelWaitUntil(task);
+  return task;
+}
+
+// Annonce publique "tout le monde est prêt".
+function announceAllReady(channelId, appId, token, content, ready) {
+  var tgt = targetOfPing(content);
+  var ids = ready.filter(function (e) { return e.id; })
+    .map(function (e) { return e.id; });
+  return postPublic(channelId, appId, token, {
+    content: "🔥 **Everyone is ready" + (tgt ? " on " + tgt : "") + " — GO!**\n" +
+      entryList(ready),
+    allowed_mentions: { parse: [], users: ids.slice(0, 100) },
+  });
+}
+
 // Cible relue depuis l'en-tête du message de tir (pour l'annonce finale).
 function targetOfPing(content) {
   var m = /^🎯 \*\*Target:\*\* (.+)$/m.exec(String(content || ""));
@@ -1199,12 +1519,14 @@ function buildLaunchPing(row, variant, resolved, tag) {
   var target = row.target || "";
   var head = "🎯 **Target:** " + target + (row.target_player ? " — " + row.target_player : "") +
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
-  // Seuls les joueurs retrouvés sur Discord peuvent cliquer : eux seuls sont
-  // attendus. Sans aucun d'eux, pas de bloc "prêt" (personne ne pourrait valider).
-  var ids = (resolved || []).map(function (r) { return r.id; }).filter(function (id) { return id; });
-  var foot = ids.length
+  // TOUS les joueurs du plan sont attendus, y compris ceux dont le pseudo n'a
+  // pas été retrouvé sur le serveur : ils s'identifieront à leur 1ᵉʳ clic.
+  var entries = (resolved || []).map(function (r) {
+    return r.id ? { id: r.id } : { name: r.name };
+  }).filter(function (e) { return e.id || e.name; });
+  var foot = entries.length
     ? "🚀 The strike on **" + target + "** is imminent — hit ✅ **I'm ready** below.\n\n" +
-      readyBlock([], ids)
+      readyBlock([], entries)
     : "🚀 The strike on **" + target + "** is imminent — get ready.";
   var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
   var body = head + "\n\n" + (mentions || "@ everyone in this nuke") + "\n\n" + foot;
@@ -1428,7 +1750,7 @@ function formationMessages(variant, mode, resolved, files) {
 // 🚀 LAUNCH : publie dans le salon le récap qui PING + le tableau (mode choisi),
 // puis un message par joueur avec sa formation. Le tout via le bot → visible de
 // tous. Le panneau éphémère du lanceur devient un simple accusé de réception.
-function doLaunch(res, body, row, variant, mode, tag) {
+function doLaunch(res, body, row, variant, mode, tag, origin) {
   var appId = body.application_id, token = body.token;
   var channelId = interactionChannelId(body);
   deferFor(res, body);
@@ -1443,8 +1765,8 @@ function doLaunch(res, body, row, variant, mode, tag) {
     var ids = resolved.map(function (r) { return r.id; }).filter(function (id) { return id; });
     var allowed = { parse: [], users: ids.slice(0, 100) };
     var combined = ping + "\n" + table;
-    // Boutons "prêt" sur le message de tir (seulement s'il y a un roster).
-    var ready = ping.indexOf(READY_TAG) >= 0 ? readyComponents() : null;
+    // Boutons du message de tir : "prêt" (s'il y a un roster) et 🏆 Success.
+    var ready = launchComponents(ping.indexOf(READY_TAG) >= 0, origin);
     // Un seul message si ça tient en 2000 car., sinon récap puis tableau.
     var msgs = combined.length <= 2000
       ? [{ content: combined, allowed_mentions: allowed, components: ready }]
@@ -1941,7 +2263,7 @@ function handler(req, res) {
             respond(res, REPLY.MESSAGE, menu);
             return;
           }
-          return doLaunch(res, body, nuke, variants[0], lmode, "");
+          return doLaunch(res, body, nuke, variants[0], lmode, "", { nukeId: nuke.id, index: 0 });
         }).catch(function () { dbError(res); });
       }
 
