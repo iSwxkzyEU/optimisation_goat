@@ -1092,7 +1092,14 @@ function handleComponent(res, body) {
   }
 
   // 🏆 Success -> confirmation, parce que ça SUPPRIME la nuke du site.
+  // Réservé aux admins : le bouton reste visible de tous (Discord ne sait pas
+  // afficher un bouton par personne), mais le clic est refusé en privé.
   if (kind === "ok") {
+    if (!isGuildAdmin(body)) {
+      reply(res, "🔒 Only admins can close a nuke — ask someone with " +
+        "**Administrator** or **Manage Server**.", true);
+      return Promise.resolve();
+    }
     respond(res, REPLY.MESSAGE, {
       content: "🏆 **Mark this nuke as a success?**\nIt gets saved to the site's " +
         "**History** and removed from the nuke list — exactly like the Success " +
@@ -1114,6 +1121,11 @@ function handleComponent(res, body) {
   }
 
   if (kind === "okc") {
+    // Re-vérifié ici : la confirmation est une interaction à part entière.
+    if (!isGuildAdmin(body)) {
+      reply(res, "🔒 Only admins can close a nuke.", true);
+      return Promise.resolve();
+    }
     var nukeId = parts[1];
     var vIdx = parseInt(parts[2], 10); if (isNaN(vIdx)) vIdx = 0;
     var okApp = body.application_id, okToken = body.token;
@@ -1421,6 +1433,41 @@ function claimMenuData(channelId, messageId, names) {
         return { label: String(n).slice(0, 100), value: String(n).slice(0, 100) };
       })))],
   };
+}
+
+// --- Droits : qui peut classer une nuke ? -------------------------------
+// Discord envoie les permissions du membre dans l'interaction, sous forme
+// d'ENTIER DÉCIMAL EN CHAÎNE qui dépasse 2^53 (Number est donc inutilisable).
+// On teste le bit voulu en divisant la chaîne par 2 — sans BigInt, pour que ce
+// soit vérifiable par scripts/syntax-check.js comme le reste du fichier.
+function halveDecimal(dec) {
+  var q = "", carry = 0;
+  for (var i = 0; i < dec.length; i++) {
+    var d = carry * 10 + (dec.charCodeAt(i) - 48);
+    q += String(Math.floor(d / 2));
+    carry = d % 2;
+  }
+  return { q: q.replace(/^0+(?=\d)/, ""), r: carry };
+}
+
+// Bit n° `bit` d'un entier décimal en chaîne.
+function decimalBit(dec, bit) {
+  var s = String(dec == null ? "" : dec).replace(/[^0-9]/g, "");
+  if (!s) return false;
+  for (var i = 0; i < bit; i++) s = halveDecimal(s).q;
+  return halveDecimal(s).r === 1;
+}
+
+var PERM_BIT_ADMIN = 3;        // ADMINISTRATOR = 1 << 3
+var PERM_BIT_MANAGE_GUILD = 5; // MANAGE_GUILD  = 1 << 5 ("Gérer le serveur")
+
+// Admin = Administrateur OU Gérer le serveur. (Le propriétaire du serveur a
+// Administrateur, il est donc couvert.) En MP il n'y a pas de membre : false.
+function isGuildAdmin(body) {
+  var perms = body && body.member && body.member.permissions;
+  if (!perms) return false;
+  return decimalBit(perms, PERM_BIT_ADMIN) ||
+         decimalBit(perms, PERM_BIT_MANAGE_GUILD);
 }
 
 // --- 🏆 Success : classer la nuke depuis Discord ------------------------
