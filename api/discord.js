@@ -1199,50 +1199,56 @@ function handleComponent(res, body) {
   // ✅ I'm ready / ↩️ Not ready sur le message de tir. L'état vit DANS le
   // message : on le relit, on y déplace le joueur, on ré-affiche. Quand le
   // dernier bascule, le bot annonce le "tout le monde est prêt" à part.
-  // ➕ Also firing for… → menu des comptes que personne ne couvre (Parsec).
+  // 🎮 Parsec → menu des joueurs dont on peut prendre les commandes.
   if (kind === "rdy2") {
-    var free = freeNames(parseReady((body.message && body.message.content) || "").waiting);
-    if (!free.length) {
-      reply(res, "Every player in this nuke is already covered — nothing left to take.", true);
-      return Promise.resolve();
-    }
-    respond(res, REPLY.MESSAGE, claimMenuData(interactionChannelId(body),
-      (body.message && body.message.id) || "", free));
-    return Promise.resolve();
+    var pWho = interactionUser(body);
+    var pMsg = (body.message && body.message.content) || "";
+    return fetchPlayerLinks().then(function (rows) {
+      var free = takeableNames(parseReady(pMsg).waiting, pWho.id, pWho.name, linkIndex(rows));
+      if (!free.length) {
+        reply(res, "Everyone still waiting is already yours — nothing to take over.", true);
+        return;
+      }
+      respond(res, REPLY.MESSAGE, claimMenuData(interactionChannelId(body),
+        (body.message && body.message.id) || "", free));
+    });
   }
 
   if (kind === "rdy" || kind === "nrdy") {
     var who = interactionUser(body);
     var msg = (body.message && body.message.content) || "";
     var chan = interactionChannelId(body);
-    var out = applyReadyClick(msg, who.id, who.name, kind === "rdy");
+    // Les liens /link disent qui pilote quoi quand les pseudos diffèrent.
+    return fetchPlayerLinks().then(function (rows) {
+      var out = applyReadyClick(msg, who.id, who.name, kind === "rdy", linkIndex(rows));
 
-    // Inconnu, mais des joueurs non retrouvés restent à pourvoir : on lui
-    // demande lequel il est (menu éphémère).
-    if (out.status === "claim") {
-      respond(res, REPLY.MESSAGE,
-        claimMenuData(chan, (body.message && body.message.id) || "", out.names));
-      return Promise.resolve();
-    }
-    if (out.status === "absent") {
-      reply(res, "You're not in this nuke — nothing to confirm here.", true);
-      return Promise.resolve();
-    }
-    // Déjà dans cet état : on le dit, plutôt que de laisser croire à un bug.
-    if (out.status === "same") {
-      reply(res, kind === "rdy"
-        ? "You're already marked **ready** — hit ↩️ *Not ready* to step back."
-        : "You're already marked **not ready**.", true);
-      return Promise.resolve();
-    }
+      // Il ne pilote rien : on lui propose de prendre les commandes de quelqu'un.
+      if (out.status === "claim") {
+        respond(res, REPLY.MESSAGE,
+          claimMenuData(chan, (body.message && body.message.id) || "", out.names));
+        return;
+      }
+      if (out.status === "absent") {
+        reply(res, "You're not in this nuke — nothing to confirm here.", true);
+        return;
+      }
+      // Déjà dans cet état : on le dit, plutôt que de laisser croire à un bug.
+      if (out.status === "same") {
+        reply(res, kind === "rdy"
+          ? "You're already marked **ready** — hit ↩️ *Not ready* to step back, " +
+            "or 🎮 *Parsec* to shoot for someone else."
+          : "You're already marked **not ready**.", true);
+        return;
+      }
 
-    respond(res, REPLY.UPDATE, {
-      content: out.content,
-      // On garde les boutons du message (prêt + éventuel Success).
-      components: (body.message && body.message.components) || readyComponents(),
-      allowed_mentions: { parse: [] }, // ré-affichage : on NE re-pingue personne
-    });
-    return readyFollowUp(out, chan, body.application_id, body.token, who.name);
+      respond(res, REPLY.UPDATE, {
+        content: out.content,
+        // On garde les boutons du message (prêt + éventuel Success).
+        components: (body.message && body.message.components) || readyComponents(),
+        allowed_mentions: { parse: [] }, // ré-affichage : on NE re-pingue personne
+      });
+      return readyFollowUp(out, chan, body.application_id, body.token, who.name);
+    }).catch(function () { dbError(res); });
   }
 
   // Le joueur a désigné qui il est dans le menu : on édite le message de tir
@@ -1487,36 +1493,52 @@ function normName(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g
 // plusieurs entrées (Parsec) sans qu'elles se confondent.
 function entryKey(e) { return e.name ? "n:" + normName(e.name) : "i:" + e.id; }
 
-// La forme "mention + pseudo" est COLLÉE (aucune espace) : c'est ce qui la
-// distingue d'une mention suivie d'une AUTRE entrée, les entrées étant, elles,
-// séparées par une espace.
+// Une entrée s'écrit `@Pseudo`, suivi de <@id> UNIQUEMENT si quelqu'un d'autre
+// que son titulaire s'en occupe (Parsec). Sans ce suffixe, c'est le joueur
+// lui-même : on le reconnaît au clic par /link ou par son pseudo Discord.
+// D'où un bloc qui reste lisible — les mentions n'apparaissent que là où elles
+// disent quelque chose.
 function entryToken(e) {
-  if (e.id && e.name) return "<@" + e.id + ">`@" + e.name + "`";
-  return e.id ? "<@" + e.id + ">" : "`@" + e.name + "`";
+  if (!e.name) return "<@" + e.id + ">"; // ancien format, encore lisible
+  return "`@" + e.name + "`" + (e.id ? "<@" + e.id + ">" : "");
 }
 function entryList(entries) { return entries.map(entryToken).join(" "); }
 
-// L'ordre compte : la forme "mention + pseudo" doit être reconnue avant les
-// formes simples, sinon on ne lirait que la mention.
 function parseEntries(line) {
-  var out = [], re = /<@!?(\d+)>`@([^`]+)`|<@!?(\d+)>|`@([^`]+)`/g, m;
+  var out = [], re = /`@([^`]+)`(?:<@!?(\d+)>)?|<@!?(\d+)>/g, m;
   while ((m = re.exec(String(line || "")))) {
-    if (m[1]) out.push({ id: m[1], name: m[2] });
-    else if (m[3]) out.push({ id: m[3] });
-    else out.push({ name: m[4] });
+    if (m[1]) out.push(m[2] ? { name: m[1], id: m[2] } : { name: m[1] });
+    else out.push({ id: m[3] }); // entrée d'un message posté avant ce format
   }
   return out;
 }
 
-// Entrées couvertes par le joueur qui vient de cliquer (plusieurs si Parsec).
-function entriesOfUser(all, userId) {
-  return (all || []).filter(function (e) { return e.id && e.id === userId; });
+// Ce joueur est-il aux commandes de cette entrée ?
+//   - suffixe <@id> : quelqu'un s'en occupe explicitement, c'est lui et lui seul
+//   - sinon : le titulaire, reconnu par /link puis par son pseudo Discord
+// `links` = index { pseudo normalisé -> id Discord } (cf. linkIndex).
+function ownsEntry(e, userId, userName, links) {
+  if (e.id) return e.id === userId;
+  if (!e.name) return false;
+  var n = normName(e.name);
+  if ((links || {})[n]) return links[n] === userId;
+  return n === normName(userName);
 }
 
-// Joueurs que personne ne couvre encore : ceux qu'on peut proposer de prendre.
-function freeNames(entries) {
-  return (entries || []).filter(function (e) { return !e.id && e.name; })
-    .map(function (e) { return e.name; });
+// Entrées pilotées par le joueur qui vient de cliquer (plusieurs si Parsec).
+function entriesOfUser(all, userId, userName, links) {
+  return (all || []).filter(function (e) {
+    return ownsEntry(e, userId, userName, links);
+  });
+}
+
+// Joueurs dont il peut prendre les commandes : tous ceux en attente qu'il ne
+// pilote pas déjà. Un joueur ayant un compte Discord en fait partie — c'est
+// justement le cas Parsec : on tire depuis SA machine, à sa place.
+function takeableNames(waiting, userId, userName, links) {
+  return (waiting || []).filter(function (e) {
+    return e.name && !ownsEntry(e, userId, userName, links);
+  }).map(function (e) { return e.name; });
 }
 
 // Les 1 ou 2 lignes qui portent l'état "prêt / en attente".
@@ -1580,7 +1602,7 @@ function readyResult(content, before, all, readySet) {
 //                                      restent à pourvoir : on lui demande qui
 //                                      il est
 //   { status: "absent" }            -> il n'a rien à faire ici
-function applyReadyClick(content, userId, userName, wantReady) {
+function applyReadyClick(content, userId, userName, wantReady, links) {
   var before = parseReady(content);
   var all = before.ready.concat(before.waiting);
   if (!all.length) return { status: "absent" };
@@ -1588,29 +1610,19 @@ function applyReadyClick(content, userId, userName, wantReady) {
   var readySet = {};
   before.ready.forEach(function (e) { readySet[entryKey(e)] = true; });
 
-  var mine = entriesOfUser(all, userId);
+  var mine = entriesOfUser(all, userId, userName, links);
 
   if (!mine.length) {
-    // Rapprochement souple : "Master_snidel" (Discord) ~ "Mastersnidel" (jeu).
-    var guess = all.find(function (e) {
-      return !e.id && normName(e.name) === normName(userName);
-    });
-    if (!guess) {
-      var names = freeNames(before.waiting);
-      return names.length ? { status: "claim", names: names } : { status: "absent" };
-    }
-    all = claimInto(all, readySet, entryKey(guess), userId);
-    mine = entriesOfUser(all, userId);
-  } else if (mine.every(function (e) { return !!readySet[entryKey(e)] === wantReady; })) {
-    // Déjà dans cet état pour tous ses comptes. S'il veut se déclarer prêt et
-    // qu'il reste des joueurs que personne ne couvre, c'est sans doute qu'il
-    // tire aussi pour eux (Parsec) : on lui propose de les prendre.
-    var free = freeNames(before.waiting);
-    if (wantReady && free.length) return { status: "claim", names: free };
+    // Il ne pilote rien : soit il prend les commandes d'un joueur en attente,
+    // soit il n'a rien à faire ici.
+    var names = takeableNames(before.waiting, userId, userName, links);
+    return names.length ? { status: "claim", names: names } : { status: "absent" };
+  }
+  if (mine.every(function (e) { return !!readySet[entryKey(e)] === wantReady; })) {
     return { status: "same" };
   }
 
-  // Un clic vaut pour TOUS les comptes que ce joueur couvre.
+  // Un clic vaut pour TOUS les comptes qu'il pilote.
   mine.forEach(function (e) {
     var k = entryKey(e);
     if (wantReady) readySet[k] = true; else delete readySet[k];
@@ -1618,8 +1630,9 @@ function applyReadyClick(content, userId, userName, wantReady) {
   return readyResult(content, before, all, readySet);
 }
 
-// Le joueur a choisi QUI il est dans le menu : on remplace son nom par sa
-// mention et on le passe prêt. "gone" = quelqu'un l'a pris entre-temps.
+// Le joueur prend les commandes de `name` (il tire à sa place) et le passe
+// prêt. Reprendre quelqu'un qui a déjà un pilote est autorisé — c'est le
+// principe du Parsec — mais pas un joueur absent du tir. "gone" = introuvable.
 function applyReadyClaim(content, userId, name) {
   var before = parseReady(content);
   var all = before.ready.concat(before.waiting);
@@ -1627,7 +1640,7 @@ function applyReadyClaim(content, userId, name) {
   before.ready.forEach(function (e) { readySet[entryKey(e)] = true; });
 
   var target = all.find(function (e) {
-    return !e.id && normName(e.name) === normName(name);
+    return e.name && normName(e.name) === normName(name);
   });
   if (!target) return { status: "gone" };
 
@@ -1646,12 +1659,12 @@ function replaceReadyBlock(content, block) {
   return out.join("\n");
 }
 
-// "Also firing for…" = le cas Parsec : on prend en charge un compte que
-// personne ne couvre. À répéter autant de fois qu'on pilote de comptes.
+// "Parsec" : on prend les commandes d'un joueur pour tirer à sa place, qu'il
+// ait un compte Discord ou non. À répéter pour chaque joueur qu'on pilote.
 function readyComponents() {
   return [row(
     button("rdy", "I'm ready", { style: 3, emoji: "✅" }),
-    button("rdy2", "Also firing for…", { style: 2, emoji: "➕" }),
+    button("rdy2", "Parsec", { style: 2, emoji: "🎮" }),
     button("nrdy", "Not ready", { style: 2, emoji: "↩️" })
   )];
 }
@@ -1662,8 +1675,8 @@ function readyComponents() {
 // on doit donc éditer le message de tir par l'API (d'où ses identifiants ici).
 function claimMenuData(channelId, messageId, names) {
   return {
-    content: "**Which player are you firing for?**\nPick the one you're shooting " +
-      "with — do it again for each account you cover (Parsec).",
+    content: "🎮 **Who are you shooting for?**\nPick the player whose account you're " +
+      "firing from — repeat for each one you're running.",
     flags: EPHEMERAL,
     components: [row(selectMenu("rdyc:" + channelId + ":" + messageId,
       "Pick your player", names.slice(0, 25).map(function (n) {
@@ -1782,8 +1795,12 @@ function readyFollowUp(out, channelId, appId, token, whoName) {
 // Annonce publique "tout le monde est prêt".
 function announceAllReady(channelId, appId, token, content, ready) {
   var tgt = targetOfPing(content);
-  var ids = ready.filter(function (e) { return e.id; })
-    .map(function (e) { return e.id; });
+  // Le bloc ne porte que des pseudos : on reprend les mentions du message
+  // (ligne de ping en haut + éventuels pilotes Parsec) pour notifier tout le monde.
+  var seen = {}, ids = [];
+  mentionIds(content).forEach(function (id) {
+    if (!seen[id]) { seen[id] = true; ids.push(id); }
+  });
   return postPublic(channelId, appId, token, {
     content: "🔥 **All players are ready" + (tgt ? " on " + tgt : "") + "** — " +
       "the shooting time will be confirmed.\n" + entryList(ready),
@@ -1793,17 +1810,12 @@ function announceAllReady(channelId, appId, token, content, ready) {
 
 // Roster de départ : TOUS les joueurs du plan sont attendus, y compris ceux
 // dont le pseudo n'a pas été retrouvé (ils s'identifieront à leur 1ᵉʳ clic).
+// On n'inscrit que les PSEUDOS EN JEU : c'est eux qui tirent. Le titulaire est
+// reconnu au clic (/link ou pseudo Discord), et une mention n'est ajoutée que
+// si quelqu'un d'autre prend les commandes.
 function readyEntriesOf(resolved) {
-  var seen = {};
-  (resolved || []).forEach(function (r) {
-    if (r.id) seen[r.id] = (seen[r.id] || 0) + 1;
-  });
-  return (resolved || []).map(function (r) {
-    if (!r.id) return { name: r.name };
-    // Un même compte Discord qui couvre PLUSIEURS joueurs (Parsec) : on garde
-    // le pseudo en jeu à côté de sa mention pour distinguer ses comptes.
-    return seen[r.id] > 1 ? { id: r.id, name: r.name } : { id: r.id };
-  }).filter(function (e) { return e.id || e.name; });
+  return (resolved || []).map(function (r) { return { name: r.name }; })
+    .filter(function (e) { return e.name; });
 }
 
 // Appel "prêt ?" SEUL : en-tête, bloc et les deux boutons. Ni tableau ni
@@ -1816,7 +1828,10 @@ function buildReadyCheck(row, variant, resolved, tag) {
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
   var entries = readyEntriesOf(resolved);
   if (!entries.length) return head + "\n\n*No player in this plan yet.*";
-  var body = head + "\n\nWho's in? Hit ✅ **I'm ready** below.\n\n" + readyBlock([], entries);
+  // Les mentions servent au ping ET à l'annonce finale, qui les relit ici.
+  var mentions = (resolved || []).map(function (r) { return r.text; }).join(" ");
+  var body = head + "\n\n" + mentions +
+    "\n\nWho's in? Hit ✅ **I'm ready** below.\n\n" + readyBlock([], entries);
   return body.length <= 2000 ? body : head + "\n\n" + readyBlock([], entries);
 }
 
