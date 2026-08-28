@@ -667,6 +667,27 @@ td.impact { color: var(--green); }
 .vp-loaded svg.lucide { width: 15px; height: 15px; vertical-align: -3px; color: var(--green); }
 .vp-loaded .btn { margin-left: auto; }
 
+/* Joueur ciblé — champ obligatoire : le fichier du bot ne donne que l'alliance */
+.vp-owner {
+  background: var(--bg-1); border: 1px solid var(--line-2);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 18px;
+}
+.vp-owner.err { border-color: rgba(255,93,87,.55); }
+.vp-owner label { display: block; font-size: 13px; margin-bottom: 8px; }
+.vp-owner svg.lucide { width: 15px; height: 15px; vertical-align: -3px; margin-right: 4px; }
+.vp-owner input {
+  width: 100%; max-width: 340px;
+  background: var(--bg-input); border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  color: var(--text); padding: 9px 11px; font-size: 14px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.vp-owner input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.vp-owner p { margin: 8px 0 0; line-height: 1.5; }
+.vp-owner code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px; background: var(--bg-input); padding: 1px 5px; border-radius: 4px;
+}
+
 /* Filtres */
 .vp-filters {
   display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;

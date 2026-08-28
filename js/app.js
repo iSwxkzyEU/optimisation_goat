@@ -1391,6 +1391,12 @@
     exclude: [],       // joueurs écartés de la recherche
     only: false,       // n'utiliser QUE les joueurs imposés
     open: null,        // clé du plan déplié dans le classement
+    // Joueur ciblé, SAISI À LA MAIN. Le fichier du bot ne le contient pas :
+    // le `Dist "…"` de son en-tête est l'ALLIANCE, pas le défenseur. On le
+    // reprenait tel quel et la nuke naissait avec un nom faux. Vide = on
+    // bloque la création tant que ce n'est pas renseigné.
+    targetPlayer: "",
+    playerError: false, // true après un clic "Create" sans nom saisi
   };
 
   function pickerOpts() {
@@ -1428,9 +1434,9 @@
       return '<div class="vp-loaded">' + ic("file-check") +
         " <b>" + p.variants.length + "</b> variants loaded" +
         (p.target ? " · target <b>" + esc(p.target) + "</b>" : "") +
-        (p.targetPlayer ? " <span class='muted'>(" + esc(p.targetPlayer) + ")</span>" : "") +
         (p.sourceWindow ? " · bot window <b>" + p.sourceWindow + "s</b>" : "") +
-        '<button class="btn ghost small" id="vp-reset">' + ic("x") + " Change file</button></div>";
+        '<button class="btn ghost small" id="vp-reset">' + ic("x") + " Change file</button></div>" +
+        pickerPlayerHtml();
     }
     return '<div class="vp-import">' +
       '<textarea id="vp-text" class="vp-text" placeholder="Paste the bot&#39;s variants file here…&#10;&#10;⚔️ Dist &quot;…&quot; → 12345 (all, window 20s) [Variant 1 (8 attacks)]&#10;+-----------+------+------+--------+&#10;|     ID    | Type | Card |  Time  |"></textarea>' +
@@ -1441,6 +1447,49 @@
       "</div>" +
       (picker.error ? '<p class="vp-err">' + ic("alert-triangle") + " " + esc(picker.error) + "</p>" : "") +
       "</div>";
+  }
+
+  // Le joueur ciblé, à SAISIR. Le fichier du bot n'a que `Dist "…"`, qui est le
+  // nom de l'ALLIANCE : le reprendre donnait une nuke au mauvais nom, invisible
+  // à la recherche et trompeuse sur Discord. On le montre donc à titre indicatif
+  // et on demande le vrai nom avant de créer quoi que ce soit.
+  function pickerPlayerHtml() {
+    var hint = picker.parsed && picker.parsed.targetPlayer;
+    return '<div class="vp-owner' + (picker.playerError ? " err" : "") + '">' +
+        '<label for="vp-owner-in">' + ic("user") + " <b>Target player</b>" +
+          '<span class="muted small"> — who owns village ' +
+          esc((picker.parsed && picker.parsed.target) || "?") + "?</span></label>" +
+        '<input id="vp-owner-in" type="text" maxlength="60" autocomplete="off" ' +
+          'placeholder="Defender\'s in-game name" value="' + esc(picker.targetPlayer) + '">' +
+        '<p class="muted small">' +
+          (hint
+            ? "The file says <b>" + esc(hint) + "</b> — that's the alliance from the " +
+              "<code>Dist</code> line, not the defender. Type the real name."
+            : "The bot's file doesn't carry the defender's name — type it here.") +
+        "</p>" +
+        (picker.playerError
+          ? '<p class="vp-err">' + ic("alert-triangle") +
+            " Fill in the target player before creating the nuke.</p>"
+          : "") +
+      "</div>";
+  }
+
+  // Saisie libre : on la garde dans `picker` car chaque clic (joueur, filtre…)
+  // re-rend toute la page et effacerait sinon le champ. Pas de re-rendu à la
+  // frappe — ce serait perdre le focus à chaque caractère.
+  function bindPickerPlayer() {
+    var input = document.getElementById("vp-owner-in");
+    if (!input) return;
+    input.oninput = function () {
+      picker.targetPlayer = input.value;
+      if (picker.playerError && input.value.trim()) {
+        picker.playerError = false;
+        var box = input.parentNode;
+        if (box) box.classList.remove("err");
+        var msg = box && box.querySelector(".vp-err");
+        if (msg) msg.remove();
+      }
+    };
   }
 
   function loadPickerText(text, rerenderFn) {
@@ -1464,6 +1513,10 @@
     picker.open = null;
     picker.include = [];
     picker.exclude = [];
+    // Nouveau fichier = nouvelle cible : on ne garde PAS le nom du précédent,
+    // ce serait le meilleur moyen de créer une nuke au nom du voisin.
+    picker.targetPlayer = "";
+    picker.playerError = false;
     rerenderFn();
   }
 
@@ -1491,8 +1544,12 @@
       picker.parsed = null;
       picker.include = [];
       picker.open = null;
+      picker.targetPlayer = "";
+      picker.playerError = false;
       rerenderFn();
     };
+
+    bindPickerPlayer();
   }
 
   /* --- Filtres --- */
@@ -1721,11 +1778,22 @@
 
   // Enregistre une nuke depuis une liste de variantes déjà construites, puis
   // ouvre sa fiche. `label` = texte de repli du bouton en cas d'erreur.
+  // Renvoie false si on a refusé de créer (nom du joueur ciblé manquant).
   function saveNukeVariants(variants, btn, label) {
     var p = picker.parsed;
+    var owner = (picker.targetPlayer || "").trim();
+    // On ne crée PAS une nuke anonyme : sans le nom du défenseur, elle est
+    // introuvable à la recherche et le bot affiche une cible sans propriétaire.
+    if (!owner) {
+      picker.playerError = true;
+      renderBest();
+      var input = document.getElementById("vp-owner-in");
+      if (input) { input.focus(); input.scrollIntoView({ block: "center" }); }
+      return false;
+    }
     var nuke = {
       target: p.target || "",
-      targetPlayer: p.targetPlayer || "",
+      targetPlayer: owner,
       categoryId: null,
       priority: false,
       targetImage: null,
@@ -1763,7 +1831,11 @@
         "<b>no player twice</b>, and <b>a captain landing last</b>. Everyone fires at " +
         "the same moment, so the <b>Time</b> column alone decides the order of impacts.<br>" +
         "Leave the players untouched to simply get the biggest plan. Click the ones who " +
-        "are <b>online</b> to require them, click again to <b>rule someone out</b>.</p>" +
+        "are <b>online</b> to require them, click again to <b>rule someone out</b>.<br>" +
+        "The file doesn't say <b>who owns the target</b> — you'll be asked for that name " +
+        "before the nuke is created. A new nuke starts <b>unsorted</b>: open it and pick a " +
+        "carousel (Netherland…) to file it, or find it under " +
+        "<b>Unsorted</b> here and in the Discord menu.</p>" +
       pickerImportHtml() +
       (picker.parsed
         ? pickerPlayersHtml() + pickerFiltersHtml() + pickerResultsHtml()
