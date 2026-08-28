@@ -80,11 +80,16 @@ alter table public.nuke_history add column if not exists outside_nuke  boolean d
 -- variant_label = quel PLAN (variante) a été tiré, pour le retrouver dans l'historique.
 alter table public.nuke_history add column if not exists variant_label text;
 
--- ---------- /plan : sondage de disponibilité (bot Discord) ----------
--- Un "plan" = une opération en préparation : on colle la table d'attaque, le
--- bot en extrait les joueurs (SHOOTERS) puis poste une grille de créneaux
--- HEURE DU JEU (06:00 -> 00:00). Chaque joueur coche ses créneaux dispo ;
--- le bot calcule en direct le meilleur créneau commun.
+-- ---------- /plan : sondage de disponibilité (RETIRÉ) ----------
+-- PLUS UTILISÉES. La commande /plan a été retirée du bot (il ne reste que
+-- /id_same_time et /link). On garde les deux tables telles quelles : les
+-- supprimer effacerait l'historique des sondages déjà passés, et elles ne
+-- coûtent rien. À supprimer à la main si tu es sûr de ne plus en vouloir.
+--
+-- Un "plan" était une opération en préparation : on collait la table d'attaque,
+-- le bot en extrayait les joueurs (SHOOTERS) puis postait une grille de créneaux
+-- HEURE DU JEU (06:00 -> 00:00). Chaque joueur cochait ses créneaux dispo ;
+-- le bot calculait en direct le meilleur créneau commun.
 create table if not exists public.plans (
   id          uuid primary key default gen_random_uuid(),
   target      text,                          -- village ID / nom de la cible

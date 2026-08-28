@@ -1,5 +1,17 @@
 /* ============================================================
-   Enregistre la slash-command /id auprès de Discord.
+   Enregistre les slash-commands du bot auprès de Discord.
+
+   Il n'y en a plus que DEUX, volontairement :
+     /id_same_time — le point d'entrée unique. Tout part de là :
+                     catégorie -> village -> plan -> aperçu, puis les
+                     boutons 📢 Post / ⚙️ Setup / 📁 Create channel /
+                     ✅ Ready check / 🚀 Launch, et 🔄 pour basculer
+                     entre le tableau SAME-TIME et le tableau OPTIMISÉ.
+     /link         — associe un pseudo EN JEU à un compte Discord.
+                     Impossible à faire par bouton (c'est un réglage
+                     personnel, pas une action de tir), d'où la 2ᵉ commande.
+                     `remove: true` sert aussi à délier.
+
    À lancer UNE FOIS en local (et à relancer si on change la commande) :
 
      DISCORD_APP_ID=... DISCORD_BOT_TOKEN=... npm run register
@@ -36,87 +48,36 @@ if (!APP_ID || !BOT_TOKEN) {
   process.exit(1);
 }
 
-// Argument "village" (requis) pour /optimise.
-var villageOption = {
-  type: 3, // STRING
-  name: "village",
-  description: "Targeted village ID (e.g. 41707)",
-  required: true,
-};
-
-// Argument "village" OPTIONNEL pour /launch_* : vide => menu de recherche
-// (catégorie -> village -> plan), sinon tir direct sur cet ID.
-var villageOptionLaunch = {
-  type: 3, // STRING
-  name: "village",
-  description: "Village ID (optional — leave empty to browse by category)",
-  required: false,
-};
-
 // PUT groupé : la liste ci-dessous REMPLACE toutes les commandes existantes.
+// Toute commande absente d'ici DISPARAÎT de Discord au prochain `npm run
+// register` — c'est ainsi qu'on a retiré /unlink, /plan, /id_syncro,
+// /launch_syncro, /launch_same_time et /optimise.
 var commands = [
+  {
+    // LE point d'entrée : catégorie -> village -> plan -> aperçu privé, puis
+    // tout se fait aux boutons (publier, éditer, salon, ready check, tir).
+    name: "id_same_time",
+    description: "Browse a village and show its launch table (everything else is a button)",
+  },
   {
     // Associe un pseudo EN JEU à son compte Discord : indispensable quand les
     // deux noms diffèrent, sinon le bot ne sait pas qui pinguer.
     name: "link",
     description: "Link your in-game name to your Discord account (so the bot can ping you)",
-    options: [{
-      type: 3, // STRING
-      name: "player",
-      description: "Your in-game name, exactly as it appears in the nuke table",
-      required: true,
-    }],
-  },
-  {
-    name: "unlink",
-    description: "Remove an in-game name from your Discord account (all of them if empty)",
-    options: [{
-      type: 3, // STRING
-      name: "player",
-      description: "In-game name to unlink (leave empty to remove them all)",
-      required: false,
-    }],
-  },
-  {
-    // Ouvre un modal (cible + table d'attaque) puis poste une grille de
-    // disponibilités HEURE DU JEU (06:00 -> 00:00) que chaque joueur coche.
-    name: "plan",
-    description: "Plan an attack: paste the table, players vote their GAME TIME availability",
-  },
-  {
-    // Menu catégorie -> village -> plan, puis tableau OPTIMISÉ (synchro).
-    name: "id_syncro",
-    description: "Browse a village and show its SYNCRO (optimized) launch table",
-  },
-  {
-    // Idem mais tableau BRUT (same time, sans optimisation).
-    name: "id_same_time",
-    description: "Browse a village and show its SAME-TIME (raw) launch table",
-  },
-  {
-    // Annonce de tir : menu (ou ID direct) + récap + ping + tableau OPTIMISÉ.
-    name: "launch_syncro",
-    description: "Announce a strike (ping) with the SYNCRO (optimized) table",
-    options: [villageOptionLaunch],
-  },
-  {
-    // Annonce de tir : menu (ou ID direct) + récap + ping + tableau BRUT.
-    name: "launch_same_time",
-    description: "Announce a strike (ping) with the SAME-TIME (raw) table",
-    options: [villageOptionLaunch],
-  },
-  {
-    name: "optimise",
-    description: "Optimize a nuke within a max fire window (omit seconds for raw times)",
     options: [
-      villageOption,
       {
-        type: 4, // INTEGER
-        name: "seconds",
-        description: "Max fire window in seconds (omit to show the raw, unoptimized times)",
+        type: 3, // STRING
+        name: "player",
+        description: "Your in-game name, exactly as it appears in the nuke table",
         required: false,
-        min_value: 0,
-        max_value: 60,
+      },
+      {
+        // Remplace l'ancienne commande /unlink : un lien fautif doit rester
+        // effaçable, sinon le bot pinguerait toujours la mauvaise personne.
+        type: 5, // BOOLEAN
+        name: "remove",
+        description: "Unlink instead of linking (leave the name empty to unlink them all)",
+        required: false,
       },
     ],
   },
@@ -144,9 +105,10 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commandes /link, /unlink, /plan, /id_syncro, /id_same_time, " +
-        "/launch_syncro, /launch_same_time et /optimise enregistrées " +
+      console.log("✅ Commandes /id_same_time et /link enregistrées " +
         (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
+      console.log("   Toutes les autres (/unlink, /plan, /id_syncro, /launch_syncro, " +
+        "/launch_same_time, /optimise) ont été retirées.");
       console.log(body);
     });
   })

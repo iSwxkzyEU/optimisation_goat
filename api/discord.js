@@ -2,46 +2,44 @@
    BOT DISCORD — endpoint serverless (Vercel).
    Même logique de calcul que le site (js/optimizer.js).
 
-   Slash-commands :
-     /plan                          : modal (cible + table d'attaque) -> extrait
-                                      les joueurs (SHOOTERS), crée/réutilise un
-                                      salon PRIVÉ "nuke-<cible>" (accès aux seuls
-                                      joueurs de l'attaque) et y poste une grille
-                                      de créneaux HEURE DU JEU (06:00 -> 00:00) ;
-                                      chaque joueur coche ses dispos, le bot
-                                      affiche en direct le meilleur créneau commun.
-                                      (Nécessite que le bot ait « Gérer les salons »
-                                      + « Gérer les rôles » ; sinon repli sur le
-                                      salon courant.)
-     /id_syncro                     : menu catégorie -> village -> APERÇU privé
-                                      du tableau OPTIMISÉ (synchro), avec quatre
-                                      boutons : 📢 Post table (publie le tableau
-                                      pour tout le monde), ⚙️ Setup (change le
-                                      side / les formations, retire ou ajoute un
-                                      joueur), 📁 Create channel (salon PRIVÉ
-                                      "nuke-<cible>" avec la compo, les joueurs
-                                      et leurs formations — sans grille de
-                                      dispos) et 🚀 Launch (publie + ping + un
-                                      message de formation par joueur).
-     /id_same_time                  : idem mais tableau BRUT (same time).
-     /launch_syncro [village]       : récap + PING des joueurs + tableau
-                                      optimisé + un message de formation par
-                                      joueur. Sans argument -> même menu de
-                                      recherche que /id_* (catégorie -> village
-                                      -> plan), puis tir. Choix du plan si >1.
-     /launch_same_time [village]    : idem mais tableau brut (same time).
+   DEUX slash-commands, pas plus. Tout le reste se fait AUX BOUTONS, pour
+   qu'il n'y ait jamais à se demander quelle commande taper :
+
+     /id_same_time  : LE point d'entrée. Menu catégorie -> village -> APERÇU
+                      privé du tableau (toi seul le vois), avec :
+                        ◀ / (i/N) / ▶   navigation entre les PLANS du village
+                        🔄               bascule SAME TIME <-> OPTIMISÉ
+                        📢 Post table    publie le tableau pour tout le monde
+                        ⚙️ Setup         side / formations / retirer-ajouter
+                                        un joueur (brouillon par plan, jamais
+                                        écrit sur le plan du site)
+                        📁 Create channel salon PRIVÉ "nuke-<cible>" avec la
+                                        compo, les joueurs et leurs formations
+                        ✅ Ready check   appel "prêt ?" seul, répétable
+                        🚀 Launch        publie + ping + un message de
+                                        formation par joueur
+                      Le menu de catégories contient un faux encart
+                      "📥 Unsorted" listant les nukes rangées nulle part
+                      (sinon elles seraient introuvables depuis Discord).
+
+     /link [player] [remove] : associe un pseudo EN JEU à un compte Discord —
+                      seule chose qu'un bouton ne peut pas faire (réglage
+                      personnel, pas action de tir). Sans argument : liste les
+                      siens. remove:true : délie ce pseudo, ou tous si vide.
+
+   Retirées : /unlink (repliée dans /link), /plan (grille de dispos),
+   /id_syncro et /launch_* (le 🔄 et les boutons de l'aperçu les remplacent),
+   /optimise (c'est le mode OPTIMISÉ de l'aperçu).
 
    PUBLICATION : Discord force l'éphémère sur toute réponse à un message
    éphémère (nos menus). Les boutons 📢 / 🚀 postent donc via le BOT
    (POST /channels/{id}/messages) : c'est ça qui rend le tableau visible de
    toute la guilde. Il faut DISCORD_BOT_TOKEN + « Envoyer des messages ».
-     /optimise <village> [seconds]  : plan principal, optimisé ±seconds ;
-                                      sans seconds -> temps BRUTS.
 
    "syncro" = temps optimisés (synchronisation des impacts).
    "same time" = temps bruts, chacun tire à sa marche (pas d'optimisation).
-   Un village peut avoir plusieurs PLANS (variantes) ; le bot propose de
-   choisir le plan 1/2/3… ou "tous" (pour /id_*).
+   Un village peut avoir plusieurs PLANS (variantes) ; l'aperçu les fait
+   défiler avec ◀ ▶.
    Si la nuke n'existe pas → message anglais "à créer sur le site".
 
    Discord envoie une requête signée (Ed25519) qu'il FAUT vérifier,
@@ -174,12 +172,6 @@ function sbWrite(method, path, payload, extra) {
     });
 }
 
-// Récupère la 1ʳᵉ nuke dont target = village. null si aucune.
-function fetchNukeByTarget(village) {
-  return sbGet("nukes?select=*&limit=1&target=eq." + encodeURIComponent(village))
-    .then(function (rows) { return (rows && rows[0]) || null; });
-}
-
 // Récupère une nuke par son id (clé primaire). null si aucune.
 function fetchNukeById(id) {
   return sbGet("nukes?select=*&limit=1&id=eq." + encodeURIComponent(id))
@@ -197,6 +189,19 @@ function fetchNukesByCategory(categoryId) {
     "nukes?select=id,target,target_player&order=target.asc&category_id=eq." +
       encodeURIComponent(categoryId)
   );
+}
+
+// Valeur du faux encart "non rangées" dans les menus. Les vrais encarts ont un
+// id UUID : aucun risque de collision avec ce mot.
+var UNSORTED = "unsorted";
+
+// Les nukes rangées dans AUCUN encart. Sans ce filet, une nuke créée sans
+// encart (c'est le cas de tout ce que « Best nuke » produit sur le site, et de
+// toute nuke dont l'encart a été supprimé — la base fait ON DELETE SET NULL)
+// n'apparaîtrait dans aucun menu du bot : introuvable depuis Discord.
+function fetchUncategorizedNukes() {
+  return sbGet("nukes?select=id,target,target_player&order=target.asc&category_id=is.null")
+    .catch(function () { return []; });
 }
 
 // Fichiers de formation uploadés sur le site : une ligne par fichier
@@ -288,14 +293,25 @@ function fetchDraft(id) {
   return sbGet("nuke_drafts?select=*&limit=1&id=eq." + encodeURIComponent(id))
     .then(function (rows) { return (rows && rows[0]) || null; });
 }
-// Dernier brouillon d'un village pour un mode donné : c'est lui qu'on rouvre
-// quand on reclique ⚙️ Setup, pour ne PAS avoir à tout refaire à chaque tir
-// (même compo, mêmes formations, mêmes joueurs exclus). null s'il n'y en a pas.
-function findDraft(nukeId, mode) {
-  return sbGet("nuke_drafts?select=*&limit=1&order=created_at.desc" +
+// Brouillons d'un village pour un mode donné, du plus récent au plus ancien.
+// C'est là-dedans qu'on repêche celui qu'on rouvre au clic sur ⚙️ Setup, pour
+// ne PAS avoir à tout refaire à chaque tir (même compo, mêmes formations,
+// mêmes joueurs exclus).
+function findDrafts(nukeId, mode) {
+  return sbGet("nuke_drafts?select=*&limit=25&order=created_at.desc" +
     "&nuke_id=eq." + encodeURIComponent(nukeId) +
     "&mode=eq." + encodeURIComponent(mode))
-    .then(function (rows) { return (rows && rows[0]) || null; });
+    .then(function (rows) { return rows || []; });
+}
+// Le brouillon d'UN plan précis. Un village à plusieurs plans a un brouillon
+// PAR plan : sans ce filtre, ⚙️ Setup sur le plan 2 rouvrait le brouillon le
+// plus récent — souvent celui du plan 1 — et renvoyait l'utilisateur sur le
+// mauvais plan. Le plan est repéré par son libellé, comme pour ♻️ Reset
+// (cf. variantIndexByTag). Village à un seul plan => libellé vide des 2 côtés.
+function draftForPlan(drafts, label) {
+  var want = String(label || "");
+  var hit = (drafts || []).find(function (d) { return String(d.label || "") === want; });
+  return hit || null;
 }
 // PATCH + return=representation : une seule requête pour écrire ET relire.
 function patchDraft(id, patch) {
@@ -425,7 +441,7 @@ function resolveMentions(guildId, names) {
 // Appel REST authentifié au bot (token Bot). `path` commence par "/". Renvoie le
 // JSON décodé (null si 204). Rejette si pas de token ou si Discord répond en
 // erreur (ex. permission « Gérer les salons » manquante) — l'appelant décide quoi
-// faire de l'échec (cf. handlePlanModal qui retombe sur le salon courant).
+// faire de l'échec (cf. doCreateChannel qui retombe sur le salon courant).
 function discordBot(method, path, payload) {
   var token = process.env.DISCORD_BOT_TOKEN;
   if (!token) return Promise.reject(new Error("DISCORD_BOT_TOKEN manquant"));
@@ -487,8 +503,6 @@ function textInput(customId, label, opts) {
   if (opts.value) c.value = opts.value;
   return c;
 }
-
-function pad2(n) { return (n < 10 ? "0" : "") + n; }
 
 // Bouton (type 2). style : 1=primary, 2=secondary, 3=success, 4=danger.
 function button(customId, label, opts) {
@@ -554,23 +568,34 @@ function planDesc(v) {
   return out.slice(0, 100);
 }
 
-// 1ʳᵉ étape (/id_* ou /launch_*) : choisir une catégorie. mode = "syncro"|"raw".
-// kind = préfixe du custom_id : "idc" (affiche un tableau) ou "lc" (lance/ping).
-function categoryMenuData(categories, mode, kind) {
+// 1ʳᵉ étape de /id_same_time : choisir une catégorie. mode = "syncro"|"raw".
+// `unsortedCount` = nombre de nukes rangées nulle part : s'il y en a, on ajoute
+// un faux encart "📥 Unsorted" pour qu'elles restent atteignables (sinon elles
+// n'existent pour personne côté Discord). Même filet que la vue "Unsorted" du site.
+function categoryMenuData(categories, mode, kind, unsortedCount) {
   kind = kind || "idc";
-  if (!categories || !categories.length) {
-    return { content: "No categories yet. Create them on the site first." };
-  }
-  var options = categories.slice(0, 25).map(function (c) {
+  // 25 options max côté Discord : on réserve la dernière place à "Unsorted"
+  // seulement s'il y a effectivement des nukes non rangées.
+  var options = (categories || []).slice(0, unsortedCount ? 24 : 25).map(function (c) {
     return { label: String(c.name).slice(0, 100), value: String(c.id) };
   });
+  if (unsortedCount) {
+    options.push({
+      label: "📥 Unsorted",
+      value: UNSORTED,
+      description: unsortedCount + " nuke" + (unsortedCount > 1 ? "s" : "") + " filed in no category",
+    });
+  }
+  if (!options.length) {
+    return { content: "No categories yet. Create them on the site first." };
+  }
   return {
     content: "**Pick a category** to see its villages:",
     components: [row(selectMenu(kind + ":" + mode, "Choose a category", options))],
   };
 }
 
-// 2ᵉ étape : choisir un village. kind = "idn" (tableau) ou "ln" (lance/ping).
+// 2ᵉ étape : choisir un village → aperçu du plan (custom_id "idn").
 function villageMenuData(categoryName, nukes, mode, kind) {
   kind = kind || "idn";
   if (!nukes || !nukes.length) {
@@ -589,19 +614,6 @@ function villageMenuData(categoryName, nukes, mode, kind) {
   return { content: content, components: [row(selectMenu(kind + ":" + mode, "Choose a village", options))] };
 }
 
-// 3ᵉ étape (si >1 plan) : choisir un plan, ou TOUS pour tout afficher.
-function variantMenuData(nuke, variants, mode) {
-  var options = variants.slice(0, 24).map(function (v, i) {
-    return { label: planName(v, i).slice(0, 100), value: String(i), description: planDesc(v) };
-  });
-  options.push({ label: "🌐 All plans", value: "all", description: "Show every plan, one message each" });
-  return {
-    content: "**TARGET " + (nuke.target || "?") + "** has " + variants.length +
-      " plans — choose one (or all):",
-    components: [row(selectMenu("idv:" + mode + ":" + nuke.id, "Choose a plan", options))],
-  };
-}
-
 // Ajoute un bandeau au-dessus du tableau — SEULEMENT s'il tient dans les
 // 2000 caractères de Discord (sinon on garde le tableau seul, prioritaire).
 function withNote(content, note) {
@@ -613,10 +625,13 @@ function withNote(content, note) {
 // Rien n'est visible des autres tant qu'on n'a pas cliqué 📢 Post ou 🚀 Launch —
 // c'est le « bouton de confirmation » demandé : on regarde, puis on publie.
 //   ◀ / (i/N) / ▶  : navigation entre les plans (si le village en a plusieurs)
+//   🔄             : bascule SAME TIME (brut) <-> OPTIMISÉ (syncro)
 //   📢 Post table  : publie le tableau dans le salon, visible de tous
 //   ⚙️ Setup       : ouvre l'éditeur (side / formations / joueurs)
 //   🚀 Launch      : publie le tableau + ping + 1 message de formation par joueur
-// custom_id : "<action>:<mode>:<nukeId>:<index>".
+// custom_id : "<action>:<mode>:<nukeId>:<index>". Le MODE voyage donc dans les
+// boutons : c'est ce qui permet au 🔄 de rejouer le même aperçu dans l'autre
+// mode (c'est aussi ce qui remplace les ex-commandes /id_syncro et /optimise).
 function previewData(nuke, variants, mode, index) {
   var total = variants.length;
   if (index < 0) index = 0;
@@ -624,6 +639,7 @@ function previewData(nuke, variants, mode, index) {
   var v = variants[index];
   var content = variantTableMessage(nuke, v, mode, { tag: variantTag(v, index, total) });
   var suffix = mode + ":" + nuke.id + ":" + index;
+  var other = mode === "raw" ? "syncro" : "raw";
   var comps = [];
   if (total > 1) {
     comps.push(row(
@@ -640,6 +656,12 @@ function previewData(nuke, variants, mode, index) {
     button("chan:" + suffix, "Create channel", { style: 2, emoji: "📁" }),
     button("rchk:" + suffix, "Ready check", { style: 2, emoji: "✅" }),
     button("lnow:" + suffix, "Launch", { style: 3, emoji: "🚀" })
+  ));
+  // Bascule de mode : c'est le MÊME handler que les flèches (vnav), on lui
+  // passe juste l'autre mode et le même index.
+  comps.push(row(
+    button("vnav:" + other + ":" + nuke.id + ":" + index,
+      mode === "raw" ? "Show optimized times" : "Show same-time (raw)", { emoji: "🔄" })
   ));
   // Aucun ping : ceci n'affiche que la cible + le tableau. parse:[] neutralise
   // toute mention qui se glisserait dans le contenu (nom de joueur, etc.).
@@ -848,20 +870,6 @@ function draftDbError(res) {
     "in Supabase (SQL Editor), then try again.", true);
 }
 
-// /launch_* avec plusieurs plans : choisir LE plan à lancer (pas de "tous").
-// Pas de flag ici : éphémère posé par l'appelant (réponse initiale) ou hérité
-// du message éphémère quand on l'affiche via UPDATE (le ping final reste public).
-function launchVariantMenuData(nuke, variants, mode) {
-  var options = variants.slice(0, 25).map(function (v, i) {
-    return { label: planName(v, i).slice(0, 100), value: String(i), description: planDesc(v) };
-  });
-  return {
-    content: "**TARGET " + (nuke.target || "?") + "** has " + variants.length +
-      " plans — which one do you launch?",
-    components: [row(selectMenu("lv:" + mode + ":" + nuke.id, "Choose the plan to launch", options))],
-  };
-}
-
 // Gère un clic sur un menu déroulant (interaction de type COMPONENT).
 // custom_id = "<kind>:<mode>[:<villageId>]". value = sélection.
 function handleComponent(res, body) {
@@ -870,11 +878,17 @@ function handleComponent(res, body) {
   var kind = parts[0];
   var mode = parts[1] === "raw" ? "raw" : "syncro";
   var value = (data.values || [])[0];
-  var appId = body.application_id;
-  var token = body.token;
 
-  // Catégorie → liste des villages.
+  // Catégorie → liste des villages. Le faux encart "📥 Unsorted" passe par la
+  // requête "category_id is null" au lieu d'un id d'encart.
   if (kind === "idc") {
+    if (value === UNSORTED) {
+      return fetchUncategorizedNukes()
+        .then(function (nukes) {
+          respond(res, REPLY.UPDATE, villageMenuData("📥 Unsorted", nukes || [], mode));
+        })
+        .catch(function () { dbError(res); });
+    }
     return Promise.all([fetchCategories(), fetchNukesByCategory(value)])
       .then(function (arr) {
         var cats = arr[0] || [], nukes = arr[1] || [];
@@ -918,16 +932,20 @@ function handleComponent(res, body) {
     }).catch(function () { dbError(res); });
   }
 
-  // ⚙️ Setup → ROUVRE le brouillon de ce village s'il existe (même compo,
+  // ⚙️ Setup → ROUVRE le brouillon DU PLAN affiché s'il existe (même compo,
   // mêmes formations, mêmes joueurs exclus qu'au dernier tir), sinon en crée
-  // un depuis le plan du site.
+  // un depuis le plan du site. Le brouillon est cherché plan par plan : sinon
+  // on ouvrirait celui du plan 1 alors que l'aperçu montre le plan 2.
   if (kind === "setup") {
-    return Promise.all([fetchNukeById(parts[2]), findDraft(parts[2], mode)])
+    return Promise.all([fetchNukeById(parts[2]), findDrafts(parts[2], mode)])
       .then(function (arr) {
-        var nuke = arr[0], existing = arr[1];
+        var nuke = arr[0], drafts = arr[1];
         if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-        if (existing) { respond(res, REPLY.UPDATE, draftPanelData(existing)); return; }
+        var variants = variantsOf(nuke);
         var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+        if (idx < 0 || idx >= variants.length) idx = 0;
+        var existing = draftForPlan(drafts, variantTag(variants[idx], idx, variants.length));
+        if (existing) { respond(res, REPLY.UPDATE, draftPanelData(existing)); return; }
         return createDraft(draftFromNuke(nuke, mode, idx, interactionUser(body).id))
           .then(function (draft) {
             if (!draft) { draftDbError(res); return; }
@@ -1130,71 +1148,6 @@ function handleComponent(res, body) {
     }).catch(function () { draftDbError(res); });
   }
 
-  // Plan choisi (ou TOUS) → tableau(x).
-  if (kind === "idv") {
-    return fetchNukeById(parts[2]).then(function (nuke) {
-      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-      var variants = variantsOf(nuke);
-      if (value === "all") {
-        // TOUS les plans : un message PAR plan (avec couleur). Le 1ᵉʳ part en
-        // réponse, les suivants en followups maintenus en vie par waitUntil
-        // (sinon la lambda Vercel gèle après la réponse et les perd).
-        var msgs = variants.map(function (v, i) {
-          return variantTableMessage(nuke, v, mode, { tag: variantTag(v, i, variants.length) });
-        });
-        respond(res, REPLY.MESSAGE, { content: msgs[0] });
-        var rest = msgs.slice(1);
-        if (!rest.length) return;
-        var task = rest.reduce(function (chain, m) {
-          return chain.then(function () { return followup(appId, token, m); });
-        }, Promise.resolve());
-        if (vercelWaitUntil(task)) return; // Vercel garde la fonction vivante
-        return task;                       // fallback : on retourne la promesse
-      }
-      var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
-      var v = variants[idx] || variants[0];
-      respond(res, REPLY.MESSAGE, {
-        content: variantTableMessage(nuke, v, mode, { tag: variantTag(v, idx, variants.length) }),
-      });
-    }).catch(function () { dbError(res); });
-  }
-
-  // [LAUNCH] Catégorie → liste des villages (on édite le menu éphémère).
-  if (kind === "lc") {
-    return Promise.all([fetchCategories(), fetchNukesByCategory(value)])
-      .then(function (arr) {
-        var cats = arr[0] || [], nukes = arr[1] || [];
-        var cat = cats.find(function (c) { return String(c.id) === String(value); });
-        respond(res, REPLY.UPDATE, villageMenuData(cat ? cat.name : "Category", nukes, mode, "ln"));
-      })
-      .catch(function () { dbError(res); });
-  }
-
-  // [LAUNCH] Village → ping direct (1 plan) ou menu de plan (>1).
-  if (kind === "ln") {
-    return fetchNukeById(value).then(function (nuke) {
-      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-      var variants = variantsOf(nuke);
-      if (variants.length > 1) {
-        respond(res, REPLY.UPDATE, launchVariantMenuData(nuke, variants, mode));
-        return;
-      }
-      return doLaunch(res, body, nuke, variants[0], mode, "", { nukeId: nuke.id, index: 0 });
-    }).catch(function () { dbError(res); });
-  }
-
-  // Plan à lancer (/launch_* multi-plans) → ping public + tableau.
-  if (kind === "lv") {
-    return fetchNukeById(parts[2]).then(function (nuke) {
-      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-      var variants = variantsOf(nuke);
-      var idx = parseInt(value, 10); if (isNaN(idx)) idx = 0;
-      var v = variants[idx] || variants[0];
-      return doLaunch(res, body, nuke, v, mode, variantTag(v, idx, variants.length),
-        { nukeId: nuke.id, index: idx });
-    }).catch(function () { dbError(res); });
-  }
-
   // ✅ I'm ready / ↩️ Not ready sur le message de tir. L'état vit DANS le
   // message : on le relit, on y déplace le joueur, on ré-affiche. Quand le
   // dernier bascule, le bot annonce le "tout le monde est prêt" à part.
@@ -1272,9 +1225,9 @@ function handleComponent(res, body) {
           allowed_mentions: { parse: [] },
         }).then(function () {
           // RIEN n'est enregistré : une prise en charge ne vaut que pour CE
-          // tir. Le Parsec est occasionnel — imposer un /unlink derrière serait
-          // pire que le problème. /link reste la démarche volontaire pour un
-          // pseudo qui ne correspond jamais.
+          // tir. Le Parsec est occasionnel — imposer un `/link remove` derrière
+          // serait pire que le problème. /link reste la démarche volontaire
+          // pour un pseudo qui ne correspond jamais.
           return editOriginal(appId2, token2, {
             content: "✅ You're marked **ready** as **" + value + "** — for this " +
               "strike only.\n*If **" + value + "** is your own account every time, " +
@@ -1364,21 +1317,12 @@ function handleComponent(res, body) {
     return okWork;
   }
 
-  // [PLAN] Vote de disponibilité : on enregistre (remplace) la sélection du
-  // joueur, puis on re-render le message (UPDATE) avec les compteurs à jour.
-  if (kind === "pa") {
-    var voter = interactionUser(body);
-    return upsertAvailability(parts[1], voter.id, voter.name, (data.values || []).slice())
-      .then(function () { return renderPlanUpdate(res, parts[1]); })
-      .catch(function () { dbError(res); });
-  }
-
-  // [PLAN] Bouton "Clear my availability" : vide le vote du joueur (re-render).
-  if (kind === "pac") {
-    var clearer = interactionUser(body);
-    return upsertAvailability(parts[1], clearer.id, clearer.name, [])
-      .then(function () { return renderPlanUpdate(res, parts[1]); })
-      .catch(function () { dbError(res); });
+  // Anciennes grilles de dispos (/plan, retirée) encore postées dans un salon :
+  // leurs boutons n'ont plus de code derrière. On le dit au lieu de rester muet.
+  if (kind === "pa" || kind === "pac") {
+    reply(res, "🕒 The availability poll (`/plan`) has been removed — " +
+      "this old message no longer works.", true);
+    return;
   }
 
   reply(res, "Unknown interaction.", true);
@@ -1433,7 +1377,8 @@ function assignmentsOf(variant, mode) {
 }
 
 // Tableau d'un PLAN. mode "syncro" (optimisé) ou "raw" (brut, non optimisé).
-// opts.maxAdj = budget ±s pour /optimise ; opts.tag = libellé du plan ("Plan 2").
+// opts.tag = libellé du plan ("Plan 2") ; opts.maxAdj = budget ±s laissé à
+// l'optimiseur (personne ne le passe aujourd'hui : la valeur par défaut sert).
 function variantTableMessage(row, variant, mode, opts) {
   opts = opts || {};
   var target = row.target || opts.village || "";
@@ -1894,12 +1839,6 @@ function followupData(appId, token, data) {
   }).then(function () {}, function () {});
 }
 
-// Message de suivi texte (cas courant). User-Agent conforme par sécurité.
-function followup(appId, token, content) {
-  if (!content) return Promise.resolve();
-  return followupData(appId, token, { content: content });
-}
-
 // Édite le message de la réponse INITIALE de l'interaction (le "le bot
 // réfléchit…" du DEFERRED, ou le panneau éphémère cliqué en DEFERRED_UPDATE) :
 // PATCH .../messages/@original. Utilise le token d'interaction (pas le bot
@@ -2128,7 +2067,7 @@ function buildChannelIntro(row, variant, resolved, tag) {
     (row.target_player ? " — " + row.target_player : "") +
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
   var foot = "Each player's formation is posted below. " +
-    "Hit 🚀 **Launch** from `/id_syncro` or `/id_same_time` when it's time to fire.";
+    "Hit 🚀 **Launch** from `/id_same_time` when it's time to fire.";
   var mentions = mentionsLine(resolved);
   var body = head + "\n\n💥 **SHOOTERS (" + participants.length + "):**\n" +
     shooterList(participants) + "\n\n" + mentions + "\n\n" + foot;
@@ -2139,8 +2078,7 @@ function buildChannelIntro(row, variant, resolved, tag) {
 }
 
 // Crée (ou réutilise) le salon privé "nuke-<cible>" et y poste la compo
-// CHOISIE : récap + tableau + un message de formation par joueur. Pas de grille
-// de disponibilités — c'est le rôle de /plan, pas celui-ci.
+// CHOISIE : récap + tableau + un message de formation par joueur.
 // `checkId` = custom_id du bouton ✅ Ready check posé sur le message d'accueil :
 // il republie un appel "prêt ?" seul, autant de fois qu'on veut, sans renvoyer
 // le tableau ni les formations.
@@ -2257,40 +2195,8 @@ function doLaunch(res, body, row, variant, mode, tag, origin) {
   return work;
 }
 
-// ============================================================
-//  /plan — sondage de disponibilité (HEURE DU JEU)
-//  /plan -> modal (target + table d'attaque). À la validation, on extrait
-//  les joueurs de la table, on crée un "plan" en base et on poste un message
-//  avec la COMPO + une grille de créneaux 06:00 -> 00:00 à cocher. Chaque clic
-//  enregistre la dispo du joueur et re-render le message (meilleur créneau).
-// ============================================================
-
-var PLAN_NA = "na"; // valeur spéciale du menu : "Not available today"
-
-// Créneaux proposés : toutes les heures pleines de 06:00 à minuit (00:00),
-// en HEURE DU JEU. -> 19 créneaux (06:00 … 23:00, 00:00).
-function defaultSlots() {
-  var out = [];
-  for (var h = 6; h <= 24; h++) out.push(pad2(h % 24) + ":00");
-  return out;
-}
-
-// Extrait les joueurs d'une table d'attaque collée : motifs "11282[Mastersnidel]"
-// (ID + pseudo entre crochets). Dédupliqué par ID, dans l'ordre d'apparition.
-function parsePlayers(text) {
-  var re = /(\d+)\s*\[\s*([^\]]+?)\s*\]/g;
-  var out = [], seen = {}, m;
-  while ((m = re.exec(String(text || "")))) {
-    var id = m[1];
-    if (seen[id]) continue;
-    seen[id] = true;
-    out.push({ id: id, name: m[2].trim() });
-  }
-  return out;
-}
-
 // Signe d'un papillon le joueur "Varju bence" (varjubence.) partout où le bot
-// écrit son nom EN TEXTE dans /plan (pas dans le tableau ASCII -> alignement).
+// écrit son nom EN TEXTE (pas dans le tableau ASCII -> alignement).
 // Match tolérant : on réduit le nom à ses lettres/chiffres minuscules, donc
 // "Varju bence", "varjubence." et "VarjuBence" matchent tous.
 function decorateName(name) {
@@ -2306,18 +2212,6 @@ function shooterList(players) {
   return players.map(function (p) { return "- " + decorateName(p.name) + "(" + p.id + ")"; }).join("\n");
 }
 
-function repeatChar(ch, n) { return n > 0 ? new Array(n + 1).join(ch) : ""; }
-function padEndStr(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
-
-// Barre de progression (█/░) proportionnelle au max de votes d'un créneau.
-function planBar(n, max, width) {
-  width = width || 10;
-  var filled = max ? Math.round((n / max) * width) : 0;
-  if (n > 0 && filled === 0) filled = 1;
-  if (filled > width) filled = width;
-  return repeatChar("█", filled) + repeatChar("░", width - filled);
-}
-
 // Lit les valeurs d'un modal soumis : { custom_id_du_champ: valeur }.
 function modalValues(body) {
   var out = {};
@@ -2325,127 +2219,6 @@ function modalValues(body) {
     (r.components || []).forEach(function (c) { out[c.custom_id] = c.value; });
   });
   return out;
-}
-
-// Modal de /plan : cible + table d'attaque (les créneaux sont fixes).
-function planModalData() {
-  return {
-    custom_id: "plan_modal",
-    title: "New attack plan",
-    components: [
-      row(textInput("target", "Target (village ID or name)", { style: 1, required: true, max_length: 100 })),
-      row(textInput("attack", "Attack file (paste the table)", { style: 2, required: true, max_length: 4000 })),
-    ],
-  };
-}
-
-// Menu de la grille : un choix par créneau (valeur = index) + "Not available today".
-function planComponents(plan) {
-  var slots = plan.slots || [];
-  var options = slots.slice(0, 24).map(function (s, i) {
-    return { label: String(s).slice(0, 100), value: String(i) };
-  });
-  options.push({ label: "🚫 Not available today", value: PLAN_NA });
-  return [
-    row(selectMenu("pa:" + plan.id, "Pick every GAME TIME slot you're free",
-      options, { min: 0, max: options.length })),
-    row(button("pac:" + plan.id, "Clear my availability", { style: 2, emoji: "🗑️" })),
-  ];
-}
-
-// Construit le message du plan : TARGET / SHOOTERS / COMPO / grille de dispos.
-// `avail` = lignes plan_availability ([{ user_name, slots:[idx|"na"] }]).
-function buildPlanMessage(plan, avail) {
-  var slots = plan.slots || [];
-  var players = plan.players || [];
-  var counts = slots.map(function () { return []; });
-  var naNames = [];
-  (avail || []).forEach(function (a) {
-    var sel = a.slots || [];
-    var name = a.user_name || "?";
-    if (sel.indexOf(PLAN_NA) !== -1) naNames.push(name);
-    sel.forEach(function (v) {
-      var i = parseInt(v, 10);
-      if (!isNaN(i) && i >= 0 && i < counts.length) counts[i].push(name);
-    });
-  });
-  var voters = (avail || []).filter(function (a) { return (a.slots || []).length; }).length;
-  var max = counts.reduce(function (mx, c) { return Math.max(mx, c.length); }, 0);
-  var bestIdx = -1;
-  counts.forEach(function (c, i) { if (max > 0 && c.length === max && bestIdx < 0) bestIdx = i; });
-
-  // Joueurs résolus en membres Discord (did renseigné à la création) -> mentions.
-  var pings = players
-    .filter(function (p) { return p.did; })
-    .map(function (p) { return "<@" + p.did + ">"; });
-  var head =
-    "🎯 **TARGET:** " + (plan.target || "—") +
-    "\n💥 **SHOOTERS (" + players.length + "):**\n" + shooterList(players) +
-    (pings.length ? "\n\n" + pings.join(" ") : "") +
-    "\n\nPlease share your availability to schedule the attack 👇";
-
-  var compo = plan.attack_text ? "\n\n**COMPO**\n```\n" + plan.attack_text + "\n```" : "";
-
-  var gridLines = slots.map(function (s, i) {
-    var c = counts[i].length;
-    // Noms des dispos de ce créneau (avec 🦋 le cas échéant) ; rien si personne.
-    var who = c ? " — " + counts[i].map(decorateName).join(", ") : "";
-    return "`" + padEndStr(s, 6) + "` " + planBar(c, max) + " **" + c + "**" +
-      (i === bestIdx ? "  ← best" : "") + who;
-  });
-  var grid = "\n🕒 **Availability (game time)** — " + voters + " player" +
-    (voters === 1 ? "" : "s") + " voted\n" +
-    "*Pick all slots you're free below. Re-open the menu anytime to change your pick, or 🗑️ to clear it.*\n" +
-    gridLines.join("\n");
-  if (bestIdx >= 0) {
-    grid += "\n\n✅ **Best slot: " + slots[bestIdx] + "** — " + max + " available";
-    if (counts[bestIdx].length) grid += ": " + counts[bestIdx].map(decorateName).join(", ");
-  } else {
-    grid += "\n\n*No availability yet — be the first to pick your slots.*";
-  }
-  if (naNames.length) grid += "\n🚫 **Not available today:** " + naNames.map(decorateName).join(", ");
-
-  var body = head + compo + "\n" + grid;
-  if (body.length <= 2000) return body;
-  // Trop long : on retire la COMPO (toujours en base / visible via /id, /optimise).
-  body = head + "\n\n*(compo hidden — too long for Discord)*\n" + grid;
-  if (body.length <= 2000) return body;
-  // Encore trop long : on tronque.
-  return ("🎯 **TARGET:** " + (plan.target || "—") + "\n" + grid).slice(0, 1990);
-}
-
-function createPlan(plan) {
-  return sbWrite("POST", "plans", plan, { Prefer: "return=representation" })
-    .then(function (rows) { return (rows && rows[0]) || null; });
-}
-function fetchPlan(id) {
-  return sbGet("plans?select=*&limit=1&id=eq." + encodeURIComponent(id))
-    .then(function (rows) { return (rows && rows[0]) || null; });
-}
-function fetchAvailability(planId) {
-  return sbGet("plan_availability?select=user_id,user_name,slots&plan_id=eq." +
-    encodeURIComponent(planId));
-}
-// Upsert (remplace) le vote d'un joueur : clé (plan_id, user_id).
-function upsertAvailability(planId, userId, userName, slots) {
-  return sbWrite("POST", "plan_availability?on_conflict=plan_id,user_id",
-    { plan_id: planId, user_id: userId, user_name: userName, slots: slots,
-      updated_at: new Date().toISOString() },
-    { Prefer: "resolution=merge-duplicates,return=minimal" });
-}
-
-// Re-render du message d'un plan (UPDATE) après un vote / un clear. On supprime
-// les mentions (parse: []) pour NE PAS re-pinguer les joueurs à chaque clic.
-function renderPlanUpdate(res, planId) {
-  return Promise.all([fetchPlan(planId), fetchAvailability(planId)]).then(function (arr) {
-    var plan = arr[0], avail = arr[1] || [];
-    if (!plan) { reply(res, "❌ This plan no longer exists.", true); return; }
-    respond(res, REPLY.UPDATE, {
-      content: buildPlanMessage(plan, avail),
-      components: planComponents(plan),
-      allowed_mentions: { parse: [] },
-    });
-  });
 }
 
 // Discord renvoie le membre (guild) ou l'utilisateur (DM). Pseudo serveur en priorité.
@@ -2456,7 +2229,7 @@ function interactionUser(body) {
 }
 
 // ============================================================
-//  Salon privé "nuke-<cible>" — créé/réutilisé à chaque /plan.
+//  Salon privé "nuke-<cible>" — créé/réutilisé par 📁 Create channel.
 // ============================================================
 
 // Bits de permission Discord (cf. doc) — passés en STRING à l'API v10.
@@ -2538,72 +2311,6 @@ function postChannelMessage(channelId, data, file) {
   });
 }
 
-// Validation d'un modal /plan. On a ≤3 s pour répondre à Discord, or créer le
-// salon + poser les droits + poster le plan = plusieurs allers-retours -> on ACK
-// d'abord en DEFERRED (éphémère), puis on fait le travail et on remplit la réponse
-// via editOriginal(). Étapes : résoudre les pseudos -> créer le plan en base ->
-// créer/réutiliser le salon privé "nuke-<cible>" -> y poster le sondage. Si la
-// création du salon échoue (droits du bot), on retombe sur le salon courant.
-function handlePlanModal(res, body) {
-  var vals = modalValues(body);
-  var players = parsePlayers(vals.attack);
-  var user = interactionUser(body);
-  var appId = body.application_id, token = body.token, guildId = body.guild_id;
-
-  // ACK immédiat : "le bot réfléchit…" (visible par toi seul).
-  respond(res, REPLY.DEFERRED, { flags: EPHEMERAL });
-
-  // Résout chaque pseudo en jeu -> membre Discord (match exact). did = id Discord
-  // si trouvé ; stocké dans players pour rendre les mentions + donner l'accès au salon.
-  var work = resolveMentions(guildId, players.map(function (p) { return p.name; }))
-    .then(function (resolved) {
-      resolved.forEach(function (r, i) { if (r.id && players[i]) players[i].did = r.id; });
-      var ids = resolvedIds(resolved);
-      var unresolved = resolved.filter(function (r) { return !r.id; })
-        .map(function (r) { return r.name; });
-      var plan = {
-        target: (vals.target || "").trim(),
-        attack_text: (vals.attack || "").trim(),
-        players: players,
-        slots: defaultSlots(),
-        created_by: user.id,
-      };
-      return createPlan(plan).then(function (saved) {
-        if (!saved) return editOriginal(appId, token, "❌ Database error — the plan wasn't saved.");
-        var msg = {
-          content: buildPlanMessage(saved, []),
-          components: planComponents(saved),
-          allowed_mentions: { parse: [], users: ids.slice(0, 100) },
-        };
-        var note = unresolved.length
-          ? "\n⚠️ Not added to the channel (Discord name not found): " + unresolved.join(", ") + "."
-          : "";
-        return ensureNukeChannel(guildId, appId, plan.target, ids)
-          .then(function (channelId) {
-            return postChannelMessage(channelId, msg).then(function () {
-              return editOriginal(appId, token,
-                "✅ Channel <#" + channelId + "> is ready — the availability poll is posted there." + note);
-            });
-          })
-          .catch(function () {
-            // Création du salon impossible (souvent : bot sans « Gérer les salons »
-            // / « Gérer les rôles »). On ne perd pas le sondage : on le poste ici.
-            return followupData(appId, token, msg).then(function () {
-              return editOriginal(appId, token,
-                "⚠️ Couldn't create the private channel — does the bot have **Manage Channels** and " +
-                "**Manage Roles**? Posted the poll in this channel instead." + note);
-            });
-          });
-      });
-    })
-    .catch(function () {
-      return editOriginal(appId, token, "❌ Something went wrong while creating the plan.");
-    });
-
-  vercelWaitUntil(work);
-  return work;
-}
-
 // Validation du modal "➕ Add player" : on ajoute le joueur au brouillon puis
 // on ré-affiche l'éditeur (UPDATE du panneau d'où venait le bouton).
 function handleAddPlayerModal(res, body, draftId) {
@@ -2626,7 +2333,6 @@ function handleAddPlayerModal(res, body, draftId) {
 
 function handleModalSubmit(res, body) {
   var cid = (body.data && body.data.custom_id) || "";
-  if (cid === "plan_modal") return handlePlanModal(res, body);
   if (cid.indexOf("dram:") === 0) return handleAddPlayerModal(res, body, cid.slice(5));
   reply(res, "Unknown modal.", true);
   return Promise.resolve();
@@ -2639,8 +2345,8 @@ function handler(req, res) {
   }
 
   // On RETOURNE la chaîne : Vercel attend la promesse, donc la fonction reste
-  // vivante jusqu'à ce que les followups (table de /launch_*, "all" de /id_*)
-  // soient envoyés — sinon la lambda peut geler juste après res.json().
+  // vivante jusqu'à ce que les messages différés (publication du tableau, pings,
+  // formations) soient partis — sinon la lambda gèle juste après res.json().
   return readRawBody(req)
     .then(function (rawBody) {
       var signature = req.headers["x-signature-ed25519"];
@@ -2670,25 +2376,26 @@ function handler(req, res) {
         return handleComponent(res, body);
       }
 
-      // Validation d'un modal (formulaire popup) — ex. /plan.
+      // Validation d'un modal (formulaire popup) — le "➕ Add player" de ⚙️ Setup.
       if (body.type === INTERACTION.MODAL_SUBMIT) {
         return handleModalSubmit(res, body);
       }
 
       var cmd = body.type === INTERACTION.COMMAND && body.data ? body.data.name : null;
-      var MODE = {
-        id_syncro: "syncro", id_same_time: "raw",
-        launch_syncro: "syncro", launch_same_time: "raw",
-      };
 
-      // /link <player> => associe un pseudo en jeu à SON compte Discord, pour
-      // être pingué correctement même si les deux noms diffèrent.
-      if (cmd === "link" || cmd === "unlink") {
+      // /link [player] [remove] => gère les pseudos EN JEU d'un compte Discord.
+      // Sans rien : liste les siens. Avec un pseudo : le lie. Avec remove:true :
+      // délie ce pseudo — ou TOUS si le champ est vide. (Ex-commande /unlink :
+      // elle a été repliée ici pour ne garder que deux commandes.)
+      if (cmd === "link") {
         var me = interactionUser(body);
-        var pOpt = (body.data.options || []).find(function (o) { return o.name === "player"; });
+        var lopts = body.data.options || [];
+        var pOpt = lopts.find(function (o) { return o.name === "player"; });
         var pName = pOpt ? String(pOpt.value).trim() : "";
+        var rmOpt = lopts.find(function (o) { return o.name === "remove"; });
+        var removing = !!(rmOpt && rmOpt.value);
 
-        if (cmd === "unlink") {
+        if (removing) {
           return deletePlayerLinks(me.id, pName)
             .then(function () {
               reply(res, pName
@@ -2697,9 +2404,19 @@ function handler(req, res) {
             })
             .catch(function () { linkDbError(res); });
         }
+        // Sans pseudo : on montre ce qui est déjà lié plutôt que de râler.
         if (!pName) {
-          reply(res, "Give your in-game name, e.g. `/link player: Mastersnidel`.", true);
-          return;
+          return fetchPlayerLinksOf(me.id)
+            .then(function (rows) {
+              var all = (rows || []).map(function (r) { return "**" + r.player + "**"; });
+              reply(res, (all.length
+                ? "🔗 Linked to your account: " + all.join(", ")
+                : "🔗 No in-game name linked to your account yet.") +
+                "\nAdd one with `/link player: Mastersnidel`" +
+                "  ·  remove one with `/link player: Mastersnidel remove: True`" +
+                "  ·  remove them all with `/link remove: True`.", true);
+            })
+            .catch(function () { linkDbError(res); });
         }
         return savePlayerLink(me.id, me.name, pName)
           .then(function () { return fetchPlayerLinksOf(me.id); })
@@ -2708,95 +2425,31 @@ function handler(req, res) {
             reply(res, "✅ **" + pName + "** is now linked to your Discord account — " +
               "you'll be pinged for it in every nuke, even if your names differ.\n" +
               "Linked so far: " + (all.join(", ") || "**" + pName + "**") +
-              "  ·  `/unlink` to remove.", true);
+              "  ·  `/link remove: True` to remove.", true);
           })
           .catch(function () { linkDbError(res); });
       }
 
-      // /plan => ouvre un modal (cible + table d'attaque). La suite (création
-      // du plan + grille de dispos) se fait à la validation du modal.
-      if (cmd === "plan") {
-        respond(res, REPLY.MODAL, planModalData());
-        return;
-      }
-
-      // /id_syncro | /id_same_time => navigation ÉPHÉMÈRE (toi seul la vois) :
+      // /id_same_time => LA commande. Navigation ÉPHÉMÈRE (toi seul la vois) :
       // catégorie -> village -> APERÇU du tableau. Rien n'est visible des autres
       // avant de cliquer 📢 Post table (tableau public) ou 🚀 Launch (tableau
-      // public + pings + formations) ; ⚙️ Setup ouvre l'éditeur avant publication.
-      if (cmd === "id_syncro" || cmd === "id_same_time") {
-        return fetchCategories()
-          .then(function (cats) {
-            var data = categoryMenuData(cats, MODE[cmd]);
+      // public + pings + formations) ; ⚙️ Setup ouvre l'éditeur avant publication,
+      // et 🔄 bascule l'aperçu entre SAME-TIME et OPTIMISÉ.
+      // La catégorie "📥 Unsorted" regroupe les nukes rangées dans aucun encart :
+      // sans elle, une nuke créée depuis « Best nuke » serait invisible ici.
+      if (cmd === "id_same_time") {
+        return Promise.all([fetchCategories(), fetchUncategorizedNukes()])
+          .then(function (arr) {
+            var data = categoryMenuData(arr[0], "raw", "idc", (arr[1] || []).length);
             data.flags = EPHEMERAL; // menu privé ; c'est le bouton qui publie
             respond(res, REPLY.MESSAGE, data);
           })
           .catch(function () { dbError(res); });
       }
 
-      // /launch_syncro | /launch_same_time <village> => ping (+ menu de plan si >1).
-      if (cmd === "launch_syncro" || cmd === "launch_same_time") {
-        var lmode = MODE[cmd];
-        var lopts = body.data.options || [];
-        var lvOpt = lopts.find(function (o) { return o.name === "village"; });
-        var lvillage = lvOpt ? String(lvOpt.value).trim() : "";
-        // Sans argument => menu de recherche (éphémère) : catégorie -> village -> ping.
-        if (!lvillage) {
-          return fetchCategories().then(function (cats) {
-            var data = categoryMenuData(cats, lmode, "lc");
-            data.flags = EPHEMERAL;
-            respond(res, REPLY.MESSAGE, data);
-          }).catch(function () { dbError(res); });
-        }
-        return fetchNukeByTarget(lvillage).then(function (nuke) {
-          if (!nuke) {
-            reply(res, "❌ No nuke found for village `" + lvillage +
-              "`. This nuke has not been created yet — please create it on the site first.", true);
-            return;
-          }
-          var variants = variantsOf(nuke);
-          if (variants.length > 1) {
-            var menu = launchVariantMenuData(nuke, variants, lmode);
-            menu.flags = EPHEMERAL; // réponse initiale : menu visible par toi seul
-            respond(res, REPLY.MESSAGE, menu);
-            return;
-          }
-          return doLaunch(res, body, nuke, variants[0], lmode, "", { nukeId: nuke.id, index: 0 });
-        }).catch(function () { dbError(res); });
-      }
-
-      // /optimise <village> [seconds] => plan principal (variante 1).
-      // Sans secondes => temps BRUTS ; avec => optimisé avec budget ±seconds.
-      if (cmd === "optimise") {
-        var oopts = body.data.options || [];
-        var ovOpt = oopts.find(function (o) { return o.name === "village"; });
-        var ovillage = ovOpt ? String(ovOpt.value).trim() : "";
-        var secOpt = oopts.find(function (o) { return o.name === "seconds"; });
-        var seconds = secOpt != null ? parseInt(secOpt.value, 10) : null;
-        if (!ovillage) {
-          reply(res, "Please provide a village ID, e.g. `/optimise 41707`.", true);
-          return;
-        }
-        if (seconds != null && (isNaN(seconds) || seconds < 0)) {
-          reply(res, "Seconds must be 0 or more, e.g. `/optimise 41707 8` (omit it for raw times).", true);
-          return;
-        }
-        return fetchNukeByTarget(ovillage).then(function (nuke) {
-          if (!nuke) {
-            reply(res, "❌ No nuke found for village `" + ovillage +
-              "`. This nuke has not been created yet — please create it on the site first.", true);
-            return;
-          }
-          var v = variantsOf(nuke)[0];
-          var msg = seconds == null
-            ? variantTableMessage(nuke, v, "raw")
-            : variantTableMessage(nuke, v, "syncro", { maxAdj: seconds });
-          reply(res, msg, false);
-        }).catch(function () { dbError(res); });
-      }
-
-      // Commande inconnue
-      reply(res, "Unknown command.", true);
+      // Commande inconnue (ex. une vieille /optimise encore en cache chez Discord).
+      reply(res, "This command no longer exists — everything now starts with " +
+        "`/id_same_time`.", true);
     })
     .catch(function () {
       res.status(400).send("bad request");
