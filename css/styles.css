@@ -701,9 +701,13 @@ td.impact { color: var(--green); }
   color: var(--text); padding: 8px 10px; font-size: 13px; min-width: 88px;
 }
 .vp-f select:focus, .vp-f input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-.vp-f.check { flex-direction: row; align-items: center; gap: 8px; padding-bottom: 8px; }
+.vp-f.check { flex-direction: row; align-items: center; gap: 8px; padding-bottom: 8px; cursor: pointer; }
 .vp-f.check > span { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); }
 .vp-f.check input { accent-color: var(--accent); width: 15px; height: 15px; }
+.vp-f.check svg.lucide { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+/* "Fastest nukes first" : change le CLASSEMENT, pas les plans trouvés. */
+.vp-f.fast svg.lucide { color: var(--amber); }
+.vp-f.fast:has(input:checked) > span { color: var(--amber); font-weight: 600; }
 
 /* Joueurs connectés */
 .vp-players {

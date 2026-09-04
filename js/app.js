@@ -1387,6 +1387,8 @@
     minArmies: 2,
     minCaps: 1,
     unique: true,      // un joueur ne peut pas apparaître deux fois dans le plan
+    fastest: false,    // classer les plans par nuke la plus RAPIDE (durée du tir
+                       // au dernier impact) plutôt que par plan le plus gros
     include: [],       // joueurs imposés (les "connectés")
     exclude: [],       // joueurs écartés de la recherche
     only: false,       // n'utiliser QUE les joueurs imposés
@@ -1406,6 +1408,7 @@
       minArmies: picker.minArmies,
       minCaps: picker.minCaps,
       uniquePlayers: picker.unique,
+      fastest: picker.fastest,
       include: picker.include,
       exclude: picker.exclude,
       only: picker.only && picker.include.length ? picker.include : null,
@@ -1579,6 +1582,13 @@
       // au prix de mobiliser deux fois la même personne.
       '<label class="vp-f check"><input type="checkbox" id="vp-unique"' +
         (picker.unique ? " checked" : "") + "><span>No duplicate player</span></label>" +
+      // Classement par VITESSE : la nuke qui tombe le plus tôt après le tir
+      // passe en tête. Ça ne change pas les plans trouvés, juste leur ordre —
+      // on ne rétrécit jamais un plan pour gagner quelques secondes.
+      '<label class="vp-f check fast" title="Rank by how soon the nuke lands ' +
+        '(fire → last impact) instead of by plan size">' +
+        '<input type="checkbox" id="vp-fastest"' + (picker.fastest ? " checked" : "") +
+        "><span>" + ic("zap") + " Fastest nukes first</span></label>" +
       // Pas de filtre de temps ici : le fichier du bot porte déjà SES
       // restrictions temporelles, en rajouter une par-dessus ne ferait que
       // jeter des plans que le bot juge tenables. L'écart de tir réel de
@@ -1606,15 +1616,25 @@
     on("vp-armies", function (e) { picker.minArmies = Math.max(0, parseInt(e.value, 10) || 0); });
     on("vp-caps", function (e) { picker.minCaps = Math.max(0, parseInt(e.value, 10) || 0); });
     on("vp-unique", function (e) { picker.unique = e.checked; });
+    on("vp-fastest", function (e) { picker.fastest = e.checked; });
   }
 
   /* --- Rendu d'un plan --- */
+
+  // Durée d'une nuke : du tir au dernier impact (= la plus longue marche, tout
+  // le monde tirant en même temps). C'est ce que classe "Fastest nukes first".
+  function durLabel(sec) {
+    return NukeOptimizer.toTime(sec || 0);
+  }
 
   function planStatsHtml(p) {
     return '<div class="vp-stats">' +
       '<span class="vp-stat"><b>' + p.attacks + "</b> attacks</span>" +
       '<span class="vp-stat"><b>' + p.armies + "</b> armies</span>" +
       '<span class="vp-stat"><b>' + p.caps + "</b> caps</span>" +
+      // Mise en avant quand c'est le critère de classement retenu.
+      '<span class="vp-stat' + (picker.fastest ? " good" : "") + '">' +
+        "lands in <b>" + esc(durLabel(p.duration)) + "</b></span>" +
       '<span class="vp-stat' + (p.spread <= 4 ? " good" : "") + '">impacts spread over <b>' +
         p.spread + "s</b></span>" +
       '<span class="vp-stat">speed cards <b>' + p.cards + "</b></span>" +
@@ -1688,7 +1708,8 @@
             '<span class="vp-rank">#' + (i + 2) + "</span>" +
             '<span class="vp-row-who">' + who + "</span>" +
             '<span class="vp-row-meta">' + p.attacks + " att · " + p.armies + "a/" +
-              p.caps + "c · " + p.spread + "s spread · V" + p.variant + "</span>" +
+              p.caps + "c · " + esc(durLabel(p.duration)) + " · " +
+              p.spread + "s spread · V" + p.variant + "</span>" +
             ic(opened ? "chevron-up" : "chevron-down") +
           "</div>" +
           (opened ? '<div class="vp-row-body">' + planStatsHtml(p) + planTableHtml(p) +
@@ -1699,7 +1720,8 @@
 
     return '<div class="vp-results">' +
         '<div class="vp-winner">' +
-          '<div class="vp-winner-head">' + ic("trophy") + " <h3>Best plan</h3>" +
+          '<div class="vp-winner-head">' + ic(picker.fastest ? "zap" : "trophy") +
+            " <h3>" + (picker.fastest ? "Fastest plan" : "Best plan") + "</h3>" +
             '<span class="muted small">' + out.total + " valid plan" + (out.total > 1 ? "s" : "") +
             " found · " + out.scanned + " combinations tested</span></div>" +
           planStatsHtml(best) +
@@ -1761,7 +1783,8 @@
   // d'offset ; les lignes sont dans l'ORDRE D'ARRIVÉE, capitaine en dernier.
   function planToVariant(plan, rank) {
     return {
-      label: (rank === 0 ? "Best" : "#" + (rank + 1)) + " · variant " + plan.variant,
+      label: (rank === 0 ? (picker.fastest ? "Fastest" : "Best") : "#" + (rank + 1)) +
+        " · variant " + plan.variant,
       side: "",
       spread: plan.spread + " seconds",
       firstLaunch: "",
@@ -1832,6 +1855,8 @@
         "the same moment, so the <b>Time</b> column alone decides the order of impacts.<br>" +
         "Leave the players untouched to simply get the biggest plan. Click the ones who " +
         "are <b>online</b> to require them, click again to <b>rule someone out</b>.<br>" +
+        "Tick <b>Fastest nukes first</b> to rank the same plans by how soon they land " +
+        "(fire → last impact) instead of by size.<br>" +
         "The file doesn't say <b>who owns the target</b> — you'll be asked for that name " +
         "before the nuke is created. A new nuke starts <b>unsorted</b>: open it and pick a " +
         "carousel (Netherland…) to file it, or find it under " +

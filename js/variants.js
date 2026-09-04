@@ -115,6 +115,7 @@
       include: opts.include || [],           // joueurs OBLIGATOIRES
       only: opts.only || null,               // si non vide : piocher UNIQUEMENT là-dedans
       exclude: opts.exclude || [],           // joueurs interdits
+      fastest: !!opts.fastest,               // classer par nuke la plus RAPIDE
       limit: opts.limit || DEFAULT_LIMIT,
     };
   }
@@ -236,6 +237,11 @@
       cards: cards,
       // Étalement réel des impacts : du premier coup au dernier.
       spread: rows[rows.length - 1].marchSec - rows[0].marchSec,
+      // Durée totale de la nuke : tout le monde tirant en même temps, c'est la
+      // marche la plus LONGUE (celle du capitaine qui ferme) — le temps qui
+      // sépare le tir du dernier impact. Plus c'est court, moins le défenseur
+      // a de temps pour réagir.
+      duration: rows[rows.length - 1].marchSec,
       key: ids.join(","),
     };
   }
@@ -248,6 +254,21 @@
   // le départager.)
   function compare(a, b) {
     return b.attacks - a.attacks ||
+           b.caps - a.caps ||
+           a.spread - b.spread ||
+           a.cards - b.cards ||
+           a.variant - b.variant;
+  }
+
+  // Variante "la plus RAPIDE d'abord" (case à cocher côté site) : on classe
+  // sur la DURÉE de la nuke — du tir au dernier impact — avant tout le reste.
+  // Les critères habituels (taille, capis, resserrement…) ne font plus que
+  // départager deux plans qui tombent au même moment.
+  // NB : la taille des plans reste celle décidée par les filtres ; cocher la
+  // case ne va pas chercher un plan plus petit pour gagner du temps.
+  function compareFast(a, b) {
+    return a.duration - b.duration ||
+           b.attacks - a.attacks ||
            b.caps - a.caps ||
            a.spread - b.spread ||
            a.cards - b.cards ||
@@ -369,9 +390,18 @@
       }
     });
 
-    plans.sort(compare);
+    var cmp = o.fastest ? compareFast : compare;
+    plans.sort(cmp);
+
+    // La sélection reste DIVERSIFIÉE (des rosters différents, pour enchaîner
+    // les nukes), mais quand on a demandé "les plus rapides d'abord", on la
+    // re-classe : sinon la liste sortirait dans l'ordre de diversification et
+    // la case cochée n'aurait l'air d'agir que sur le plan n°1.
+    var picked = selectDiverse(plans, o.limit);
+    if (o.fastest) picked = picked.slice().sort(cmp);
+
     return {
-      plans: selectDiverse(plans, o.limit),
+      plans: picked,
       total: plans.length,
       scanned: scanned,
     };
