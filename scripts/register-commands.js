@@ -8,8 +8,8 @@
                      ✅ Ready check / 🚀 Launch, et 🔄 pour basculer
                      entre le tableau SAME-TIME et le tableau OPTIMISÉ.
      /table        — DANS un salon de nuke (créé par 📁 Create channel) :
-                     re-poste le tableau + les formations à jour depuis le
-                     brouillon rattaché au salon. Réservé au préparateur/admin.
+                     re-poste le TABLEAU à jour depuis le brouillon rattaché au
+                     salon (les formations, c'est 🛡️ Choose side). Préparateur/admin.
      /link         — associe un pseudo EN JEU à un compte Discord.
                      Impossible à faire par bouton (c'est un réglage
                      personnel, pas une action de tir), d'où la 2ᵉ commande.
@@ -66,7 +66,7 @@ var commands = [
     // À lancer DANS un salon de nuke (créé par 📁 Create channel) : re-poste le
     // tableau + les formations à jour, sans repasser par /id_same_time.
     name: "table",
-    description: "In a nuke channel: re-post the table and each player's formation",
+    description: "In a nuke channel: re-post the launch table (Choose side posts formations)",
   },
   {
     // Associe un pseudo EN JEU à son compte Discord : indispensable quand les

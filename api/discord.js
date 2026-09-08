@@ -29,9 +29,9 @@
                       (sinon elles seraient introuvables depuis Discord).
 
      /table         : DANS un salon de nuke (créé par 📁 Create channel), re-poste
-                      le tableau + les formations à jour depuis le brouillon
-                      rattaché au salon. Réservé au préparateur / aux admins
-                      (ça re-pingue chaque joueur). Ailleurs : message d'aide.
+                      le TABLEAU à jour depuis le brouillon rattaché au salon.
+                      PAS les formations (c'est 🛡️ Choose side qui les poste) —
+                      donc pas de re-ping. Réservé au préparateur / aux admins.
 
      /link [player] [remove] : associe un pseudo EN JEU à un compte Discord —
                       seule chose qu'un bouton ne peut pas faire (réglage
@@ -1173,8 +1173,8 @@ function handleComponent(res, body) {
       if (!draft) { draftGone(res); return; }
       if (!canControl(body, draft)) { notOwner(res); return; }
       return patchDraft(draft.id, { side: value }).then(function (saved) {
-        return repostTableAndFormations(res, body, saved || draft,
-          "✅ Side set to **" + value + "** — updated table and formations posted above.");
+        return repostTable(res, body, saved || draft,
+          "✅ Side set to **" + value + "** — updated table and formations posted above.", true);
       });
     }).catch(function () { draftDbError(res); });
   }
@@ -1933,29 +1933,35 @@ function runReadyCheck(res, body, ctx) {
   return work;
 }
 
-// Re-poste le TABLEAU + un message de formation par joueur dans le salon, à
-// partir du BROUILLON (donc side / formations / joueurs tels qu'ils ont été
-// réglés). Utilisé par /table et par 🛡️ Choose side. Transforme l'interaction
-// en accusé de réception éphémère. `okMsg` = confirmation à afficher.
-function repostTableAndFormations(res, body, draft, okMsg) {
+// Re-poste le TABLEAU dans le salon, à partir du BROUILLON. `withForms` ajoute
+// un message de formation par joueur (avec son fichier + ping) : réservé à
+// 🛡️ Choose side, où les formations dépendent du side qu'on vient de choisir.
+// /table, lui, ne reposte QUE le tableau (pas de re-ping, pas de formations).
+// Transforme l'interaction en accusé de réception éphémère.
+function repostTable(res, body, draft, okMsg, withForms) {
   var appId = body.application_id, token = body.token;
   var chan = interactionChannelId(body);
   deferFor(res, body);
-  var work = Promise.all([
-    resolveMentions(body.guild_id, participantNames(draftVariant(draft))),
-    fetchFormationFiles(),
-  ]).then(function (arr) {
-    var resolved = arr[0] || [], files = arr[1] || [];
-    var msgs = [{
-      content: variantTableMessage(draftRow(draft), draftVariant(draft), draft.mode,
-        { tag: draft.label || "" }),
-      allowed_mentions: { parse: [] },
-    }].concat(formationMessages(draftVariant(draft), draft.mode, resolved, files));
-    return postSequence(chan, appId, token, msgs).then(function (why) {
-      return editOriginal(appId, token, {
-        content: why ? "⚠️ Couldn't post everything — " + why + "." : okMsg,
-        components: [],
-      });
+  var tableMsg = {
+    content: variantTableMessage(draftRow(draft), draftVariant(draft), draft.mode,
+      { tag: draft.label || "" }),
+    allowed_mentions: { parse: [] },
+  };
+  var prep = withForms
+    ? Promise.all([
+        resolveMentions(body.guild_id, participantNames(draftVariant(draft))),
+        fetchFormationFiles(),
+      ]).then(function (arr) {
+        return [tableMsg].concat(
+          formationMessages(draftVariant(draft), draft.mode, arr[0] || [], arr[1] || []));
+      })
+    : Promise.resolve([tableMsg]);
+  var work = prep.then(function (msgs) {
+    return postSequence(chan, appId, token, msgs);
+  }).then(function (why) {
+    return editOriginal(appId, token, {
+      content: why ? "⚠️ Couldn't post everything — " + why + "." : okMsg,
+      components: [],
     });
   }).catch(function () {
     return editOriginal(appId, token,
@@ -2631,19 +2637,18 @@ function handler(req, res) {
       }
 
       // /table => DANS un salon de nuke (créé par 📁 Create channel), re-poste le
-      // tableau + un message de formation par joueur, à jour depuis le brouillon
-      // rattaché au salon. Réservé au préparateur/admin (comme les autres boutons
-      // de contrôle : ça re-pingue chaque joueur). Ailleurs : message d'aide.
+      // TABLEAU SEUL à jour depuis le brouillon rattaché au salon (pas de
+      // formations, pas de re-ping — c'est 🛡️ Choose side qui poste les
+      // formations). Réservé au préparateur/admin. Ailleurs : message d'aide.
       if (cmd === "table") {
         return fetchDraftByChannel(interactionChannelId(body)).then(function (draft) {
           if (!draft) {
             reply(res, "Run `/table` **inside a nuke channel** created with " +
-              "📁 **Create channel** — it re-posts that nuke's table and formations here.", true);
+              "📁 **Create channel** — it re-posts that nuke's table here.", true);
             return;
           }
           if (!canControl(body, draft)) { notOwner(res); return; }
-          return repostTableAndFormations(res, body, draft,
-            "✅ Table and formations re-posted above.");
+          return repostTable(res, body, draft, "✅ Table re-posted above.", false);
         }).catch(function () { draftDbError(res); });
       }
 
