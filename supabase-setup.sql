@@ -131,6 +131,10 @@ create table if not exists public.nuke_drafts (
   created_by    text,
   created_at    timestamptz default now()
 );
+-- Salon privé "nuke-<cible>" auquel ce brouillon est rattaché (bouton 📁 Create
+-- channel). Sert à retrouver le brouillon depuis le salon : les boutons ⚙️ Setup
+-- / 🛡️ Choose side posés dans le salon et la commande /table repartent de là.
+alter table public.nuke_drafts add column if not exists channel_id text;
 
 -- ---------- /link : pseudo en jeu <-> compte Discord ----------
 -- Le bot associe les joueurs d'un plan à leurs membres Discord par leur pseudo.

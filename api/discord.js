@@ -2,8 +2,8 @@
    BOT DISCORD — endpoint serverless (Vercel).
    Même logique de calcul que le site (js/optimizer.js).
 
-   DEUX slash-commands, pas plus. Tout le reste se fait AUX BOUTONS, pour
-   qu'il n'y ait jamais à se demander quelle commande taper :
+   TROIS slash-commands. Tout le reste se fait AUX BOUTONS, pour qu'il n'y ait
+   jamais à se demander quelle commande taper :
 
      /id_same_time  : LE point d'entrée. Menu catégorie -> village -> APERÇU
                       privé du tableau (toi seul le vois), avec :
@@ -14,13 +14,24 @@
                                         un joueur (brouillon par plan, jamais
                                         écrit sur le plan du site)
                         📁 Create channel salon PRIVÉ "nuke-<cible>" avec la
-                                        compo, les joueurs et leurs formations
-                        ✅ Ready check   appel "prêt ?" seul, répétable
+                                        compo, les joueurs et leurs formations.
+                                        Le salon est RATTACHÉ au brouillon
+                                        (colonne channel_id) : il reste éditable
+                                        jusqu'au dernier moment via ses boutons
+                                        🛡️ Choose side / ⚙️ Setup / ✅ Ready check,
+                                        réservés au préparateur (ou aux admins).
+                        ✅ Ready check   appel "prêt ?" seul, répétable ; les
+                                        prêts s'affichent UN NOM PAR LIGNE (puce)
                         🚀 Launch        publie + ping + un message de
                                         formation par joueur
                       Le menu de catégories contient un faux encart
                       "📥 Unsorted" listant les nukes rangées nulle part
                       (sinon elles seraient introuvables depuis Discord).
+
+     /table         : DANS un salon de nuke (créé par 📁 Create channel), re-poste
+                      le tableau + les formations à jour depuis le brouillon
+                      rattaché au salon. Réservé au préparateur / aux admins
+                      (ça re-pingue chaque joueur). Ailleurs : message d'aide.
 
      /link [player] [remove] : associe un pseudo EN JEU à un compte Discord —
                       seule chose qu'un bouton ne peut pas faire (réglage
@@ -97,6 +108,11 @@ var ALL_READY = "🔥 **All players are ready** — the shooting time will be co
 // pas à son texte exact, pour qu'un changement de formulation ne casse pas les
 // messages déjà postés (le bloc serait dupliqué au clic suivant).
 var ALL_READY_TAG = "🔥 **";
+// Puce d'un joueur dans le bloc "prêt" : un nom PAR LIGNE (plus lisible qu'une
+// ligne compacte). C'est AUSSI un repère de relecture : parseReady() rattache
+// les lignes puce à leur tag (✅/⏳), et replaceReadyBlock() les efface toutes
+// pour réécrire le bloc. Le "• " en début de ligne n'apparaît QUE là.
+var BULLET = "• ";
 
 // --- Corps brut : on lit le flux nous-mêmes (NE PAS lire req.body avant) ---
 function readRawBody(req) {
@@ -292,6 +308,16 @@ function createDraft(draft) {
 function fetchDraft(id) {
   return sbGet("nuke_drafts?select=*&limit=1&id=eq." + encodeURIComponent(id))
     .then(function (rows) { return (rows && rows[0]) || null; });
+}
+// Le brouillon rattaché à un salon privé (colonne channel_id, posée par 📁 Create
+// channel). Le plus récent gagne si le salon a été recréé. Sert aux boutons du
+// salon (⚙️ Setup / 🛡️ Choose side) et à la commande /table.
+function fetchDraftByChannel(channelId) {
+  if (!channelId) return Promise.resolve(null);
+  return sbGet("nuke_drafts?select=*&limit=1&order=created_at.desc&channel_id=eq." +
+    encodeURIComponent(channelId))
+    .then(function (rows) { return (rows && rows[0]) || null; })
+    .catch(function () { return null; });
 }
 // Brouillons d'un village pour un mode donné, du plus récent au plus ancien.
 // C'est là-dedans qu'on repêche celui qu'on rouvre au clic sur ⚙️ Setup, pour
@@ -955,63 +981,53 @@ function handleComponent(res, body) {
   }
 
   // 📁 Create channel (depuis l'aperçu) → salon privé avec la compo choisie.
+  // On crée (ou réutilise) le BROUILLON du plan et on le rattache au salon :
+  // sans ça, le salon serait un cul-de-sac (impossible d'y éditer side /
+  // formations / joueurs). Même repêchage plan par plan que ⚙️ Setup pour ne
+  // pas dupliquer un brouillon déjà réglé.
   if (kind === "chan") {
-    return fetchNukeById(parts[2]).then(function (nuke) {
-      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-      var variants = variantsOf(nuke);
-      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
-      var v = variants[idx] || variants[0];
-      return doCreateChannel(res, body, nuke, v, mode, variantTag(v, idx, variants.length),
-        "rchk:" + mode + ":" + nuke.id + ":" + idx, { nukeId: nuke.id, index: idx });
-    }).catch(function () { dbError(res); });
+    return Promise.all([fetchNukeById(parts[2]), findDrafts(parts[2], mode)])
+      .then(function (arr) {
+        var nuke = arr[0], drafts = arr[1];
+        if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+        var variants = variantsOf(nuke);
+        var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+        if (idx < 0 || idx >= variants.length) idx = 0;
+        var tag = variantTag(variants[idx], idx, variants.length);
+        var existing = draftForPlan(drafts, tag);
+        var ready = existing
+          ? Promise.resolve(existing)
+          : createDraft(draftFromNuke(nuke, mode, idx, interactionUser(body).id));
+        return ready.then(function (draft) {
+          if (!draft) { draftDbError(res); return; }
+          return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
+            draft.mode, draft.label || "", draft.id, { nukeId: nuke.id, index: idx });
+        });
+      }).catch(function () { dbError(res); });
   }
 
   // ✅ Ready check → poste un appel "prêt ?" SEUL dans le salon courant.
   // Répétable : rien d'autre n'est renvoyé (ni tableau, ni formations).
-  if (kind === "rchk" || kind === "rchkd") {
-    var chkCtx = kind === "rchkd"
-      ? fetchDraft(parts[1]).then(function (d) {
-          return d ? { row: draftRow(d), variant: draftVariant(d),
-                       mode: d.mode, tag: d.label || "" } : null;
-        })
-      : fetchNukeById(parts[2]).then(function (n) {
-          if (!n) return null;
-          var vs = variantsOf(n);
-          var i = parseInt(parts[3], 10); if (isNaN(i)) i = 0;
-          var vv = vs[i] || vs[0];
-          return { row: n, variant: vv, mode: mode, tag: variantTag(vv, i, vs.length) };
-        });
-    var chkApp = body.application_id, chkToken = body.token;
-    var chkChan = interactionChannelId(body);
-    deferFor(res, body);
-    var chkWork = chkCtx.then(function (ctx) {
-      if (!ctx) {
-        return editOriginal(chkApp, chkToken,
-          { content: "❌ This plan is no longer available.", components: [] });
-      }
-      return resolveMentions(body.guild_id, participantNames(ctx.variant))
-        .then(function (resolved) {
-          var pingIds = resolvedIds(resolved);
-          return postPublic(chkChan, chkApp, chkToken, {
-            content: buildReadyCheck(ctx.row, ctx.variant, resolved, ctx.tag),
-            components: readyComponents(),
-            allowed_mentions: { parse: [], users: pingIds.slice(0, 100) },
-          });
-        })
-        .then(function (why) {
-          return editOriginal(chkApp, chkToken, {
-            content: why
-              ? "⚠️ Couldn't post the ready check publicly — " + why + "."
-              : "✅ Ready check posted here — click it again anytime for a fresh one.",
-            components: [],
-          });
-        });
-    }).catch(function () {
-      return editOriginal(chkApp, chkToken,
-        { content: "❌ Something went wrong while posting the ready check.", components: [] });
-    });
-    vercelWaitUntil(chkWork);
-    return chkWork;
+  // rchkd = bouton POSÉ DANS LE SALON (public) → réservé au préparateur/admin.
+  // rchk  = bouton de l'aperçu ÉPHÉMÈRE (déjà privé au lanceur), pas de gate.
+  if (kind === "rchkd") {
+    return fetchDraft(parts[1]).then(function (d) {
+      if (!d) { draftGone(res); return; }
+      if (!canControl(body, d)) { notOwner(res); return; }
+      return runReadyCheck(res, body, {
+        row: draftRow(d), variant: draftVariant(d), mode: d.mode, tag: d.label || "",
+      });
+    }).catch(function () { draftDbError(res); });
+  }
+  if (kind === "rchk") {
+    return fetchNukeById(parts[2]).then(function (n) {
+      if (!n) { reply(res, "❌ This village no longer exists.", true); return; }
+      var vs = variantsOf(n);
+      var i = parseInt(parts[3], 10); if (isNaN(i)) i = 0;
+      var vv = vs[i] || vs[0];
+      return runReadyCheck(res, body,
+        { row: n, variant: vv, mode: mode, tag: variantTag(vv, i, vs.length) });
+    }).catch(function () { dbError(res); });
   }
 
   // 🚀 Launch (depuis l'aperçu) → tableau public + ping + formations.
@@ -1111,7 +1127,7 @@ function handleComponent(res, body) {
           ? { nukeId: nuke.id, index: variantIndexByTag(variantsOf(nuke), draft.label) }
           : null;
         return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
-          draft.mode, draft.label || "", "rchkd:" + draft.id, origin);
+          draft.mode, draft.label || "", draft.id, origin);
       });
     }).catch(function () { draftDbError(res); });
   }
@@ -1121,6 +1137,52 @@ function handleComponent(res, body) {
     return fetchDraft(parts[1]).then(function (draft) {
       if (!draft) { draftGone(res); return; }
       respond(res, REPLY.UPDATE, draftPanelData(draft));
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // --- Boutons POSÉS DANS LE SALON (message public) : réservés au préparateur
+  // ou aux admins. La nuke reste ainsi modifiable jusqu'au dernier moment sans
+  // repasser par /id_same_time. -------------------------------------------
+
+  // ⚙️ Setup depuis le salon → rouvre l'éditeur en ÉPHÉMÈRE (visible du seul
+  // cliqueur) : on ne touche pas au message d'accueil public.
+  if (kind === "dedit") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      if (!canControl(body, draft)) { notOwner(res); return; }
+      var data = draftPanelData(draft);
+      data.flags = EPHEMERAL;
+      respond(res, REPLY.MESSAGE, data);
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // 🛡️ Choose side depuis le salon → menu des 4 côtés en éphémère. Répond à la
+  // nuke sans side (« Best nuke ») : un clic suffit à réparer les formations.
+  if (kind === "csd") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      if (!canControl(body, draft)) { notOwner(res); return; }
+      respond(res, REPLY.MESSAGE, {
+        content: "🛡️ **Pick the side** — the table and each player's formation " +
+          "are re-computed for it and re-posted in the channel.",
+        flags: EPHEMERAL,
+        components: [row(selectMenu("csds:" + draft.id, "Side — " + (draft.side || "not set"),
+          SIDES.map(function (s) {
+            return selected({ label: s, value: s }, s === draft.side);
+          })))],
+      });
+    }).catch(function () { draftDbError(res); });
+  }
+
+  // Côté choisi → on l'écrit sur le brouillon et on re-poste tableau + formations.
+  if (kind === "csds") {
+    return fetchDraft(parts[1]).then(function (draft) {
+      if (!draft) { draftGone(res); return; }
+      if (!canControl(body, draft)) { notOwner(res); return; }
+      return patchDraft(draft.id, { side: value }).then(function (saved) {
+        return repostTableAndFormations(res, body, saved || draft,
+          "✅ Side set to **" + value + "** — updated table and formations posted above.");
+      });
     }).catch(function () { draftDbError(res); });
   }
 
@@ -1468,7 +1530,6 @@ function entryToken(e) {
   if (!e.name) return "<@" + e.id + ">"; // ancien format, encore lisible
   return "`@" + e.name + "`" + (e.id ? "<@" + e.id + ">" : "");
 }
-function entryList(entries) { return entries.map(entryToken).join(" "); }
 
 function parseEntries(line) {
   var out = [], re = /`@([^`]+)`(?:<@!?(\d+)>)?|<@!?(\d+)>/g, m;
@@ -1507,28 +1568,58 @@ function takeableNames(waiting, userId, userName, links) {
   }).map(function (e) { return e.name; });
 }
 
-// Les 1 ou 2 lignes qui portent l'état "prêt / en attente".
+// Une puce par entrée : "• `@Nom`". Sert au bloc "prêt" et à l'annonce finale.
+function bulletList(entries) {
+  return (entries || []).map(function (e) { return BULLET + entryToken(e); });
+}
+
+// Le bloc "prêt / en attente" : un tag par état, puis UN NOM PAR LIGNE en puce.
+//   ✅ **Ready (2/5):**
+//   • `@Alice`
+//   • `@Bob`
+//   ⏳ **Waiting:**
+//   • `@Carol`
+// Quand personne n'attend plus, la ligne 🔥 remplace le bloc "Waiting".
 function readyBlock(ready, waiting) {
   var total = ready.length + waiting.length;
-  var lines = [READY_TAG + " (" + ready.length + "/" + total + "):** " +
-    (ready.length ? entryList(ready) : "—")];
-  if (waiting.length) lines.push(WAIT_TAG + ":** " + entryList(waiting));
-  else if (total) lines.push(ALL_READY);
+  var lines = [READY_TAG + " (" + ready.length + "/" + total + "):**"];
+  lines = ready.length ? lines.concat(bulletList(ready)) : lines.concat(BULLET + "—");
+  if (waiting.length) {
+    lines.push(WAIT_TAG + ":**");
+    lines = lines.concat(bulletList(waiting));
+  } else if (total) {
+    lines.push(ALL_READY);
+  }
   return lines.join("\n");
 }
 
+// Lignes qui APPARTIENNENT au bloc "prêt" (à effacer/réécrire d'un clic à
+// l'autre) : les tags ET les puces. La puce n'existe que dans ce bloc.
 function isReadyLine(line) {
   return line.indexOf(READY_TAG) === 0 || line.indexOf(WAIT_TAG) === 0 ||
-    line.indexOf(ALL_READY_TAG) === 0;
+    line.indexOf(ALL_READY_TAG) === 0 || line.indexOf(BULLET) === 0;
 }
 
-// Relit l'état écrit dans le message.
+// Toutes les entrées rattachées à un tag : le tag lui-même (ancien format, où
+// les noms étaient SUR la ligne du tag) PLUS les lignes puce qui le suivent
+// (nouveau format). parseEntries() extrait les jetons quel que soit le découpage
+// en lignes — les messages postés avant ce format restent donc relus.
+function entriesUnder(lines, i) {
+  var text = lines[i];
+  for (var j = i + 1; j < lines.length && lines[j].indexOf(BULLET) === 0; j++) {
+    text += "\n" + lines[j];
+  }
+  return parseEntries(text);
+}
+
+// Relit l'état écrit dans le message (compatible ancien format sur une ligne).
 function parseReady(content) {
+  var lines = String(content || "").split("\n");
   var ready = [], waiting = [];
-  String(content || "").split("\n").forEach(function (l) {
-    if (l.indexOf(READY_TAG) === 0) ready = parseEntries(l);
-    else if (l.indexOf(WAIT_TAG) === 0) waiting = parseEntries(l);
-  });
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf(READY_TAG) === 0) ready = entriesUnder(lines, i);
+    else if (lines[i].indexOf(WAIT_TAG) === 0) waiting = entriesUnder(lines, i);
+  }
   return { ready: ready, waiting: waiting };
 }
 
@@ -1687,6 +1778,23 @@ function isGuildAdmin(body) {
          decimalBit(perms, PERM_BIT_MANAGE_GUILD);
 }
 
+// Droit d'utiliser les boutons de CONTRÔLE posés dans le salon (⚙️ Setup,
+// 🛡️ Choose side, ✅ Ready check, édition des formations) : seul CELUI QUI A
+// PRÉPARÉ la nuke (draft.created_by) ou un admin. Les boutons joueur
+// (I'm ready / Not ready / Parsec) restent ouverts à tous. Un brouillon sans
+// created_by (ancien) n'enferme personne : on laisse passer.
+function canControl(body, draft) {
+  if (isGuildAdmin(body)) return true;
+  var owner = draft && draft.created_by;
+  if (!owner) return true;
+  return String(owner) === String(interactionUser(body).id);
+}
+
+function notOwner(res) {
+  reply(res, "🔒 Only the person who set this nuke up (or an admin) can use this " +
+    "button. You can still hit **I'm ready** / **Not ready** below.", true);
+}
+
 // --- 🏆 Success : classer la nuke depuis Discord ------------------------
 // Même effet que le bouton Success du site : une trace dans nuke_history, puis
 // la nuke sort de la liste. On garde la variante BRUTE de la ligne (elle porte
@@ -1767,7 +1875,7 @@ function announceAllReady(channelId, appId, token, content, ready) {
   var ids = uniqueList(mentionIds(content));
   return postPublic(channelId, appId, token, {
     content: "🔥 **All players are ready" + (tgt ? " on " + tgt : "") + "** — " +
-      "the shooting time will be confirmed.\n" + entryList(ready),
+      "the shooting time will be confirmed.\n" + bulletList(ready).join("\n"),
     allowed_mentions: { parse: [], users: ids.slice(0, 100) },
   });
 }
@@ -1797,6 +1905,71 @@ function buildReadyCheck(row, variant, resolved, tag) {
   var body = head + "\n\n" + mentions +
     "\n\nWho's in? Hit ✅ **I'm ready** below.\n\n" + readyBlock([], entries);
   return body.length <= 2000 ? body : head + "\n\n" + readyBlock([], entries);
+}
+
+// Poste l'appel "prêt ?" dans le salon courant et transforme l'interaction en
+// accusé de réception éphémère. `ctx` = { row, variant, mode, tag } DÉJÀ résolu
+// (pas une promesse). Partagé par le bouton de l'aperçu (rchk) et celui du
+// salon (rchkd) : même publication, seule la porte d'entrée diffère.
+function runReadyCheck(res, body, ctx) {
+  var appId = body.application_id, token = body.token;
+  var chan = interactionChannelId(body);
+  deferFor(res, body);
+  var work = resolveMentions(body.guild_id, participantNames(ctx.variant))
+    .then(function (resolved) {
+      var pingIds = resolvedIds(resolved);
+      return postPublic(chan, appId, token, {
+        content: buildReadyCheck(ctx.row, ctx.variant, resolved, ctx.tag),
+        components: readyComponents(),
+        allowed_mentions: { parse: [], users: pingIds.slice(0, 100) },
+      });
+    })
+    .then(function (why) {
+      return editOriginal(appId, token, {
+        content: why
+          ? "⚠️ Couldn't post the ready check publicly — " + why + "."
+          : "✅ Ready check posted here — click it again anytime for a fresh one.",
+        components: [],
+      });
+    })
+    .catch(function () {
+      return editOriginal(appId, token,
+        { content: "❌ Something went wrong while posting the ready check.", components: [] });
+    });
+  vercelWaitUntil(work);
+  return work;
+}
+
+// Re-poste le TABLEAU + un message de formation par joueur dans le salon, à
+// partir du BROUILLON (donc side / formations / joueurs tels qu'ils ont été
+// réglés). Utilisé par /table et par 🛡️ Choose side. Transforme l'interaction
+// en accusé de réception éphémère. `okMsg` = confirmation à afficher.
+function repostTableAndFormations(res, body, draft, okMsg) {
+  var appId = body.application_id, token = body.token;
+  var chan = interactionChannelId(body);
+  deferFor(res, body);
+  var work = Promise.all([
+    resolveMentions(body.guild_id, participantNames(draftVariant(draft))),
+    fetchFormationFiles(),
+  ]).then(function (arr) {
+    var resolved = arr[0] || [], files = arr[1] || [];
+    var msgs = [{
+      content: variantTableMessage(draftRow(draft), draftVariant(draft), draft.mode,
+        { tag: draft.label || "" }),
+      allowed_mentions: { parse: [] },
+    }].concat(formationMessages(draftVariant(draft), draft.mode, resolved, files));
+    return postSequence(chan, appId, token, msgs).then(function (why) {
+      return editOriginal(appId, token, {
+        content: why ? "⚠️ Couldn't post everything — " + why + "." : okMsg,
+        components: [],
+      });
+    });
+  }).catch(function () {
+    return editOriginal(appId, token,
+      { content: "❌ Something went wrong while re-posting the table.", components: [] });
+  });
+  vercelWaitUntil(work);
+  return work;
 }
 
 // Cible relue depuis l'en-tête du message de tir (pour l'annonce finale).
@@ -2079,12 +2252,17 @@ function buildChannelIntro(row, variant, resolved, tag) {
 
 // Crée (ou réutilise) le salon privé "nuke-<cible>" et y poste la compo
 // CHOISIE : récap + tableau + un message de formation par joueur.
-// `checkId` = custom_id du bouton ✅ Ready check posé sur le message d'accueil :
-// il republie un appel "prêt ?" seul, autant de fois qu'on veut, sans renvoyer
-// le tableau ni les formations.
-function channelComponents(checkId, origin) {
+// Le message d'accueil porte les boutons de PILOTAGE du tir (réservés au
+// préparateur / aux admins) : 🛡️ Choose side, ⚙️ Setup, ✅ Ready check, 🏆 Success.
+// Tous partent du BROUILLON rattaché au salon (draftId) : c'est ce qui rend la
+// nuke modifiable jusqu'au dernier moment, sans repasser par /id_same_time.
+function channelComponents(draftId, origin) {
   var btns = [];
-  if (checkId) btns.push(button(checkId, "Ready check", { style: 3, emoji: "✅" }));
+  if (draftId) {
+    btns.push(button("csd:" + draftId, "Choose side", { style: 1, emoji: "🛡️" }));
+    btns.push(button("dedit:" + draftId, "Setup", { style: 2, emoji: "⚙️" }));
+    btns.push(button("rchkd:" + draftId, "Ready check", { style: 3, emoji: "✅" }));
+  }
   if (origin && origin.nukeId) {
     btns.push(button("ok:" + origin.nukeId + ":" + (origin.index || 0),
       "Success — remove from site", { style: 4, emoji: "🏆" }));
@@ -2092,7 +2270,9 @@ function channelComponents(checkId, origin) {
   return btns.length ? [rowOf.apply(null, btns)] : null;
 }
 
-function doCreateChannel(res, body, row, variant, mode, tag, checkId, origin) {
+// `draftId` = brouillon à rattacher au salon (colonne channel_id) : les boutons
+// du salon et /table repartent de lui. On l'écrit une fois le salon connu.
+function doCreateChannel(res, body, row, variant, mode, tag, draftId, origin) {
   var appId = body.application_id, token = body.token, guildId = body.guild_id;
   deferFor(res, body);
 
@@ -2118,7 +2298,7 @@ function doCreateChannel(res, body, row, variant, mode, tag, checkId, origin) {
       {
         content: buildChannelIntro(row, variant, resolved, tag),
         allowed_mentions: { parse: [], users: ids.slice(0, 100) },
-        components: channelComponents(checkId, origin),
+        components: channelComponents(draftId, origin),
       },
       {
         content: variantTableMessage(row, variant, mode, { tag: tag }),
@@ -2128,7 +2308,15 @@ function doCreateChannel(res, body, row, variant, mode, tag, checkId, origin) {
 
     return ensureNukeChannel(guildId, appId, row.target, ids)
       .then(function (channelId) {
-        return postSequence(channelId, appId, token, msgs).then(function () {
+        // On rattache le salon au brouillon AVANT de poster : ainsi ses boutons
+        // (⚙️ / 🛡️) et /table retrouvent la nuke même si un message se perd.
+        // Un échec d'écriture ne doit pas empêcher la publication.
+        var bind = draftId
+          ? patchDraft(draftId, { channel_id: channelId }).catch(function () { return null; })
+          : Promise.resolve(null);
+        return bind.then(function () {
+          return postSequence(channelId, appId, token, msgs);
+        }).then(function () {
           return editOriginal(appId, token, {
             content: "✅ <#" + channelId + "> is ready — composition, table and " +
               "formations are posted there, and only these players can see it." + note,
@@ -2445,6 +2633,23 @@ function handler(req, res) {
             respond(res, REPLY.MESSAGE, data);
           })
           .catch(function () { dbError(res); });
+      }
+
+      // /table => DANS un salon de nuke (créé par 📁 Create channel), re-poste le
+      // tableau + un message de formation par joueur, à jour depuis le brouillon
+      // rattaché au salon. Réservé au préparateur/admin (comme les autres boutons
+      // de contrôle : ça re-pingue chaque joueur). Ailleurs : message d'aide.
+      if (cmd === "table") {
+        return fetchDraftByChannel(interactionChannelId(body)).then(function (draft) {
+          if (!draft) {
+            reply(res, "Run `/table` **inside a nuke channel** created with " +
+              "📁 **Create channel** — it re-posts that nuke's table and formations here.", true);
+            return;
+          }
+          if (!canControl(body, draft)) { notOwner(res); return; }
+          return repostTableAndFormations(res, body, draft,
+            "✅ Table and formations re-posted above.");
+        }).catch(function () { draftDbError(res); });
       }
 
       // Commande inconnue (ex. une vieille /optimise encore en cache chez Discord).

@@ -1,12 +1,15 @@
 /* ============================================================
    Enregistre les slash-commands du bot auprès de Discord.
 
-   Il n'y en a plus que DEUX, volontairement :
+   Il n'y en a que TROIS, volontairement :
      /id_same_time — le point d'entrée unique. Tout part de là :
                      catégorie -> village -> plan -> aperçu, puis les
                      boutons 📢 Post / ⚙️ Setup / 📁 Create channel /
                      ✅ Ready check / 🚀 Launch, et 🔄 pour basculer
                      entre le tableau SAME-TIME et le tableau OPTIMISÉ.
+     /table        — DANS un salon de nuke (créé par 📁 Create channel) :
+                     re-poste le tableau + les formations à jour depuis le
+                     brouillon rattaché au salon. Réservé au préparateur/admin.
      /link         — associe un pseudo EN JEU à un compte Discord.
                      Impossible à faire par bouton (c'est un réglage
                      personnel, pas une action de tir), d'où la 2ᵉ commande.
@@ -60,6 +63,12 @@ var commands = [
     description: "Browse a village and show its launch table (everything else is a button)",
   },
   {
+    // À lancer DANS un salon de nuke (créé par 📁 Create channel) : re-poste le
+    // tableau + les formations à jour, sans repasser par /id_same_time.
+    name: "table",
+    description: "In a nuke channel: re-post the table and each player's formation",
+  },
+  {
     // Associe un pseudo EN JEU à son compte Discord : indispensable quand les
     // deux noms diffèrent, sinon le bot ne sait pas qui pinguer.
     name: "link",
@@ -105,7 +114,7 @@ fetch(url, {
         console.error("Échec (" + res.status + ") :", body);
         process.exit(1);
       }
-      console.log("✅ Commandes /id_same_time et /link enregistrées " +
+      console.log("✅ Commandes /id_same_time, /table et /link enregistrées " +
         (GUILD_ID ? "sur le serveur " + GUILD_ID : "globalement") + ".");
       console.log("   Toutes les autres (/unlink, /plan, /id_syncro, /launch_syncro, " +
         "/launch_same_time, /optimise) ont été retirées.");
