@@ -981,29 +981,22 @@ function handleComponent(res, body) {
   }
 
   // 📁 Create channel (depuis l'aperçu) → salon privé avec la compo choisie.
-  // On crée (ou réutilise) le BROUILLON du plan et on le rattache au salon :
-  // sans ça, le salon serait un cul-de-sac (impossible d'y éditer side /
-  // formations / joueurs). Même repêchage plan par plan que ⚙️ Setup pour ne
-  // pas dupliquer un brouillon déjà réglé.
+  // Brouillon NEUF depuis le plan ACTUEL du site (jamais un brouillon repêché :
+  // il pouvait porter une cible/compo périmée, d'où un salon "d'une autre
+  // nuke"). Il sert de copie de travail éditable et est rattaché au salon.
   if (kind === "chan") {
-    return Promise.all([fetchNukeById(parts[2]), findDrafts(parts[2], mode)])
-      .then(function (arr) {
-        var nuke = arr[0], drafts = arr[1];
-        if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
-        var variants = variantsOf(nuke);
-        var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
-        if (idx < 0 || idx >= variants.length) idx = 0;
-        var tag = variantTag(variants[idx], idx, variants.length);
-        var existing = draftForPlan(drafts, tag);
-        var ready = existing
-          ? Promise.resolve(existing)
-          : createDraft(draftFromNuke(nuke, mode, idx, interactionUser(body).id));
-        return ready.then(function (draft) {
+    return fetchNukeById(parts[2]).then(function (nuke) {
+      if (!nuke) { reply(res, "❌ This village no longer exists.", true); return; }
+      var variants = variantsOf(nuke);
+      var idx = parseInt(parts[3], 10); if (isNaN(idx)) idx = 0;
+      if (idx < 0 || idx >= variants.length) idx = 0;
+      return createDraft(draftFromNuke(nuke, mode, idx, interactionUser(body).id))
+        .then(function (draft) {
           if (!draft) { draftDbError(res); return; }
           return doCreateChannel(res, body, draftRow(draft), draftVariant(draft),
             draft.mode, draft.label || "", draft.id, { nukeId: nuke.id, index: idx });
         });
-      }).catch(function () { dbError(res); });
+    }).catch(function () { dbError(res); });
   }
 
   // ✅ Ready check → poste un appel "prêt ?" SEUL dans le salon courant.
@@ -2239,8 +2232,8 @@ function buildChannelIntro(row, variant, resolved, tag) {
   var head = "📁 **Nuke on " + target + "**" +
     (row.target_player ? " — " + row.target_player : "") +
     "\n🛡️ **Side:** " + ((variant && variant.side) || "—") + (tag ? "  ·  " + tag : "");
-  var foot = "Each player's formation is posted below. " +
-    "Hit 🚀 **Launch** from `/id_same_time` when it's time to fire.";
+  var foot = "🛡️ **Choose side** to post each player's formation · ⚙️ **Setup** to " +
+    "tweak · ✅ **Ready check** when it's time.";
   var mentions = mentionsLine(resolved);
   var body = head + "\n\n💥 **SHOOTERS (" + participants.length + "):**\n" +
     shooterList(participants) + "\n\n" + mentions + "\n\n" + foot;
@@ -2250,9 +2243,9 @@ function buildChannelIntro(row, variant, resolved, tag) {
   return head + "\n\n" + mentions + "\n\n" + foot;
 }
 
-// Crée (ou réutilise) le salon privé "nuke-<cible>" et y poste la compo
-// CHOISIE : récap + tableau + un message de formation par joueur.
-// Le message d'accueil porte les boutons de PILOTAGE du tir (réservés au
+// Crée (ou réutilise) le salon privé "nuke-<cible>" et y poste l'accueil + le
+// tableau. Les formations ne partent PAS ici : 🛡️ Choose side les poste (elles
+// dépendent du side). Le message d'accueil porte les boutons de PILOTAGE (réservés au
 // préparateur / aux admins) : 🛡️ Choose side, ⚙️ Setup, ✅ Ready check, 🏆 Success.
 // Tous partent du BROUILLON rattaché au salon (draftId) : c'est ce qui rend la
 // nuke modifiable jusqu'au dernier moment, sans repasser par /id_same_time.
@@ -2276,11 +2269,8 @@ function doCreateChannel(res, body, row, variant, mode, tag, draftId, origin) {
   var appId = body.application_id, token = body.token, guildId = body.guild_id;
   deferFor(res, body);
 
-  var work = Promise.all([
-    resolveMentions(guildId, participantNames(variant)),
-    fetchFormationFiles(),
-  ]).then(function (arr) {
-    var resolved = arr[0] || [], files = arr[1] || [];
+  var work = resolveMentions(guildId, participantNames(variant)).then(function (resolved) {
+    resolved = resolved || [];
     var ids = resolvedIds(resolved);
     var unresolved = resolved.filter(function (r) { return !r.id; })
       .map(function (r) { return r.name; });
@@ -2294,6 +2284,10 @@ function doCreateChannel(res, body, row, variant, mode, tag, draftId, origin) {
         { content: "❌ This only works inside a server.", components: [] });
     }
 
+    // Intro + tableau UNIQUEMENT. Les formations (1 message + fichier par joueur)
+    // ne partent PAS automatiquement : elles dépendent du side, et sont postées
+    // quand on clique 🛡️ Choose side (ou /table). Sans ça, une nuke sans side
+    // (« Best nuke ») cracherait des formations fausses dès la création.
     var msgs = [
       {
         content: buildChannelIntro(row, variant, resolved, tag),
@@ -2304,7 +2298,7 @@ function doCreateChannel(res, body, row, variant, mode, tag, draftId, origin) {
         content: variantTableMessage(row, variant, mode, { tag: tag }),
         allowed_mentions: { parse: [] },
       },
-    ].concat(formationMessages(variant, mode, resolved, files));
+    ];
 
     return ensureNukeChannel(guildId, appId, row.target, ids)
       .then(function (channelId) {
@@ -2318,8 +2312,9 @@ function doCreateChannel(res, body, row, variant, mode, tag, draftId, origin) {
           return postSequence(channelId, appId, token, msgs);
         }).then(function () {
           return editOriginal(appId, token, {
-            content: "✅ <#" + channelId + "> is ready — composition, table and " +
-              "formations are posted there, and only these players can see it." + note,
+            content: "✅ <#" + channelId + "> is ready — composition and table are " +
+              "posted there, and only these players can see it.\n" +
+              "🛡️ Hit **Choose side** in the channel to post each player's formation." + note,
             components: [],
           });
         });
